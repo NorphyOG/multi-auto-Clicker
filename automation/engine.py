@@ -37,6 +37,9 @@ class AutomationEngine:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
     def _log(self, msg: str) -> None:
         if self._on_log:
             try:
