@@ -1,0 +1,17 @@
+{
+  "click_positions": [
+    {
+      "x": 951,
+      "y": 617,
+      "label": null
+    }
+  ],
+  "click_rate_per_second": 5.0,
+  "total_clicks": 0,
+  "click_type": "left",
+  "click_mode": "static_sequence",
+  "run_in_background": false,
+  "debug_overlay_enabled": false,
+  "start_hotkey": "F6",
+  "stop_hotkey": "F7"
+}
