@@ -115,6 +115,7 @@ class ApplicationSettings:
     debug_overlay_enabled: bool = False
     start_hotkey: str = "F6"
     stop_hotkey: str = "F7"
+    dark_mode_enabled: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize settings to primitive types for JSON storage."""
@@ -128,6 +129,7 @@ class ApplicationSettings:
             "debug_overlay_enabled": self.debug_overlay_enabled,
             "start_hotkey": self.start_hotkey,
             "stop_hotkey": self.stop_hotkey,
+            "dark_mode_enabled": self.dark_mode_enabled,
         }
 
     @staticmethod
@@ -150,4 +152,5 @@ class ApplicationSettings:
             debug_overlay_enabled=bool(data.get("debug_overlay_enabled", False)),
             start_hotkey=str(data.get("start_hotkey", "F6")),
             stop_hotkey=str(data.get("stop_hotkey", "F7")),
+            dark_mode_enabled=bool(data.get("dark_mode_enabled", False)),
         )

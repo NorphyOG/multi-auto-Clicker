@@ -1,8 +1,23 @@
 {
   "click_positions": [
     {
-      "x": 951,
-      "y": 617,
+      "x": 838,
+      "y": 497,
+      "label": null
+    },
+    {
+      "x": 1061,
+      "y": 511,
+      "label": null
+    },
+    {
+      "x": 822,
+      "y": 713,
+      "label": null
+    },
+    {
+      "x": 1058,
+      "y": 719,
       "label": null
     }
   ],
@@ -13,5 +28,6 @@
   "run_in_background": false,
   "debug_overlay_enabled": false,
   "start_hotkey": "F6",
-  "stop_hotkey": "F7"
+  "stop_hotkey": "F7",
+  "dark_mode_enabled": true
 }

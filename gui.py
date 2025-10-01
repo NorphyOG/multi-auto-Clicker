@@ -40,15 +40,22 @@ class AutoClickerGUI:
 
     MONITOR_POLL_MS = 400
     CLICK_COUNTER_POLL_MS = 120
+    DEFAULT_WINDOW_SIZE = (1150, 1000)
+    MIN_WINDOW_SIZE = (960, 760)
+    WINDOW_MARGIN = (48, 80)
 
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Multi Auto Clicker")
-        self.root.geometry("780x660")
-        self.root.resizable(False, False)
+        self._configure_window_geometry()
 
         self.settings_manager = SettingsManager()
         self.settings: ApplicationSettings = self.settings_manager.load()
+
+        self.style = ttk.Style()
+        self.dark_mode_var = tk.BooleanVar(value=getattr(self.settings, "dark_mode_enabled", False))
+        self._configure_styles()
+        self._apply_theme()
 
         # Runtime state --------------------------------------------------
         self.click_positions: List[ClickPosition] = list(self.settings.click_positions)
@@ -87,9 +94,17 @@ class AutoClickerGUI:
         self.monitor_info_var = tk.StringVar(value="Cursor: (0, 0) | Bildschirm 1")
         self.automation_minimize_var = tk.BooleanVar(value=True)
         self.automation_infinite_var = tk.BooleanVar(value=True)
+        self.position_count_var = tk.StringVar(value="")
+        self.click_interval_hint_var = tk.StringVar(value="")
+        self.estimated_duration_var = tk.StringVar(value="")
+
+        self.click_rate_var.trace_add("write", lambda *_: self._update_click_metrics())
+        self.total_clicks_var.trace_add("write", lambda *_: self._update_click_metrics())
+        self._update_click_metrics()
 
         # UI --------------------------------------------------------------
         self._build_ui()
+        self._apply_theme()
         self._refresh_position_list()
         self._on_click_mode_changed()
         self.debug_overlay.set_positions(self.click_positions)
@@ -102,6 +117,275 @@ class AutoClickerGUI:
         self._persist_suspended = False
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
 
+    def _configure_window_geometry(self) -> None:
+        """Adapt the main window to the active monitor resolution."""
+        screen_width = max(int(self.root.winfo_screenwidth()), 1)
+        screen_height = max(int(self.root.winfo_screenheight()), 1)
+        margin_x, margin_y = self.WINDOW_MARGIN
+
+        usable_width = max(screen_width - margin_x, 720)
+        usable_height = max(screen_height - margin_y, 640)
+
+        default_width, default_height = self.DEFAULT_WINDOW_SIZE
+        min_width, min_height = self.MIN_WINDOW_SIZE
+
+        width = min(default_width, usable_width)
+        height = min(default_height, usable_height)
+
+        width = max(width, min(min_width, usable_width))
+        height = max(height, min(min_height, usable_height))
+
+        x = max((screen_width - width) // 2, 0)
+        y = max((screen_height - height) // 2, 0)
+
+        self.root.geometry(f"{int(width)}x{int(height)}+{int(x)}+{int(y)}")
+
+        self.root.minsize(int(width), int(height))
+
+        allow_resize = width < default_width or height < default_height
+        self.root.resizable(allow_resize, allow_resize)
+
+    def _configure_styles(self) -> None:
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        base_font = ("Segoe UI", 10)
+        heading_font = ("Segoe UI", 15, "bold")
+        subheading_font = ("Segoe UI", 10)
+
+        self.style.configure(".", font=base_font)
+        self.style.configure("Header.TLabel", font=heading_font)
+        self.style.configure("HeaderSubtitle.TLabel", font=subheading_font)
+        self.style.configure("Card.TLabelframe", borderwidth=1, relief="solid")
+        self.style.configure("Card.TLabelframe.Label", font=("Segoe UI", 11, "bold"))
+        self.style.configure("CardBody.TFrame")
+        self.style.configure("AccentCard.TLabelframe", borderwidth=1, relief="solid")
+        self.style.configure("AccentCard.TLabelframe.Label", font=("Segoe UI", 11, "bold"))
+        self.style.configure("AccentCardLabel.TLabel")
+        self.style.configure("AccentCardHint.TLabel", font=("Segoe UI", 9))
+        self.style.configure("App.TNotebook", borderwidth=0, padding=0)
+        self.style.configure("App.TNotebook.Tab", padding=(16, 8), font=("Segoe UI", 10, "bold"))
+        self.style.configure("Toolbar.TButton", padding=(8, 6))
+        self.style.configure("Accent.TButton", padding=(10, 7), borderwidth=0)
+        self.style.configure("Danger.TButton", padding=(10, 7), borderwidth=0)
+        self.style.configure("Ghost.TButton", padding=(8, 6), borderwidth=0)
+        self.style.configure("AccentCard.TSpinbox", arrowsize=14, padding=4)
+        self.style.configure("AccentCard.TCombobox", padding=4)
+        self.style.configure("Secondary.TLabel")
+        self.style.configure("Hint.TLabel")
+
+        self._apply_theme(initial=True)
+
+    def _get_palette(self, dark: bool) -> Dict[str, str]:
+        if dark:
+            return {
+                "app_bg": "#0f172a",
+                "card_bg": "#1f2937",
+                "header_bg": "#0b1628",
+                "accent_card_bg": "#1e293b",
+                "accent_outline": "#3b82f6",
+                "text_primary": "#f9fafb",
+                "text_secondary": "#d1d5db",
+                "text_muted": "#9ca3af",
+                "border_color": "#374151",
+                "accent_color": "#60a5fa",
+                "accent_hover": "#7dd3fc",
+                "accent_active": "#2563eb",
+                "accent_disabled": "#1d4ed8",
+                "text_on_accent": "#0b1628",
+                "text_on_disabled": "#bac8ff",
+                "danger_color": "#f87171",
+                "danger_hover": "#fb7185",
+                "danger_active": "#dc2626",
+                "danger_disabled": "#7f1d1d",
+                "ghost_bg": "#1f2937",
+                "ghost_hover": "#273548",
+                "ghost_active": "#324158",
+                "list_bg": "#111827",
+                "list_fg": "#f9fafb",
+                "text_area_bg": "#111827",
+                "entry_bg": "#111827",
+                "entry_fg": "#f9fafb",
+                "tab_unselected_fg": "#9ca3af",
+                "tab_selected_fg": "#f9fafb",
+                "separator": "#1f2937",
+                "highlight": "#3b82f6",
+            }
+        return {
+            "app_bg": "#eef2f9",
+            "card_bg": "#ffffff",
+            "header_bg": "#f3f5f9",
+            "accent_card_bg": "#edf3ff",
+            "accent_outline": "#4e8cff",
+            "text_primary": "#1f2933",
+            "text_secondary": "#4b5563",
+            "text_muted": "#6b7280",
+            "border_color": "#d8dee9",
+            "accent_color": "#4e8cff",
+            "accent_hover": "#5f9dff",
+            "accent_active": "#2f6ed6",
+            "accent_disabled": "#99b9ff",
+            "text_on_accent": "#ffffff",
+            "text_on_disabled": "#cbd5f5",
+            "danger_color": "#d83b3b",
+            "danger_hover": "#e15656",
+            "danger_active": "#a72c2c",
+            "danger_disabled": "#f5b4b4",
+            "ghost_bg": "#eef2f9",
+            "ghost_hover": "#e2e8f5",
+            "ghost_active": "#cfd8ec",
+            "list_bg": "#ffffff",
+            "list_fg": "#1f2933",
+            "text_area_bg": "#ffffff",
+            "entry_bg": "#ffffff",
+            "entry_fg": "#1f2933",
+            "tab_unselected_fg": "#4b5563",
+            "tab_selected_fg": "#1f2933",
+            "separator": "#d8dee9",
+            "highlight": "#4e8cff",
+        }
+
+    def _apply_theme(self, *, initial: bool = False) -> None:
+        palette = self._get_palette(self.dark_mode_var.get())
+        self._current_palette = palette
+
+        self.root.configure(background=palette["app_bg"])
+
+        self.style.configure("TFrame", background=palette["card_bg"])
+        self.style.configure("TLabel", background=palette["card_bg"], foreground=palette["text_primary"])
+        self.style.configure("TLabelFrame", background=palette["card_bg"], foreground=palette["text_primary"])
+        self.style.configure("TEntry", fieldbackground=palette["entry_bg"], foreground=palette["entry_fg"], background=palette["card_bg"])
+        self.style.configure("TCombobox", fieldbackground=palette["entry_bg"], foreground=palette["entry_fg"], background=palette["card_bg"])
+        self.style.configure("TCheckbutton", background=palette["card_bg"], foreground=palette["text_primary"])
+        self.style.configure("TButton", background=palette["card_bg"], foreground=palette["text_primary"])
+
+        self.style.configure("Background.TFrame", background=palette["app_bg"])
+        self.style.configure("Card.TFrame", background=palette["card_bg"])
+        self.style.configure("Header.TFrame", background=palette["header_bg"])
+        self.style.configure("Header.TLabel", background=palette["header_bg"], foreground=palette["text_primary"])
+        self.style.configure("HeaderSubtitle.TLabel", background=palette["header_bg"], foreground=palette["text_secondary"])
+
+        self.style.configure(
+            "Card.TLabelframe",
+            background=palette["card_bg"],
+            lightcolor=palette["border_color"],
+            darkcolor=palette["border_color"],
+            bordercolor=palette["border_color"],
+        )
+        self.style.configure("Card.TLabelframe.Label", background=palette["card_bg"], foreground=palette["text_primary"])
+        self.style.configure("CardBody.TFrame", background=palette["card_bg"])
+
+        self.style.configure(
+            "AccentCard.TLabelframe",
+            background=palette["accent_card_bg"],
+            lightcolor=palette["accent_outline"],
+            darkcolor=palette["accent_outline"],
+            bordercolor=palette["accent_outline"],
+        )
+        self.style.configure("AccentCard.TLabelframe.Label", background=palette["accent_card_bg"], foreground=palette["text_secondary"])
+        self.style.configure("AccentCard.TFrame", background=palette["accent_card_bg"])
+        self.style.configure("AccentCardLabel.TLabel", background=palette["accent_card_bg"], foreground=palette["text_primary"])
+        self.style.configure("AccentCardHint.TLabel", background=palette["accent_card_bg"], foreground=palette["text_muted"])
+
+        self.style.configure("Secondary.TLabel", background=palette["card_bg"], foreground=palette["text_secondary"])
+        self.style.configure("Hint.TLabel", background=palette["card_bg"], foreground=palette["text_muted"])
+
+        self.style.configure("App.TNotebook", background=palette["app_bg"])
+        self.style.configure("App.TNotebook.Tab", background=palette["app_bg"], foreground=palette["tab_unselected_fg"])
+        self.style.map(
+            "App.TNotebook.Tab",
+            background=[("selected", palette["card_bg"]), ("!selected", palette["app_bg"])],
+            foreground=[("selected", palette["tab_selected_fg"]), ("!selected", palette["tab_unselected_fg"])],
+        )
+
+        self.style.configure("Accent.TButton", background=palette["accent_color"], foreground=palette["text_on_accent"])
+        self.style.map(
+            "Accent.TButton",
+            background=[
+                ("disabled", palette["accent_disabled"]),
+                ("pressed", palette["accent_active"]),
+                ("active", palette["accent_hover"]),
+            ],
+            foreground=[("disabled", palette["text_on_disabled"])],
+        )
+
+        self.style.configure("Danger.TButton", background=palette["danger_color"], foreground=palette["text_on_accent"])
+        self.style.map(
+            "Danger.TButton",
+            background=[
+                ("disabled", palette["danger_disabled"]),
+                ("pressed", palette["danger_active"]),
+                ("active", palette["danger_hover"]),
+            ],
+            foreground=[("disabled", palette["text_on_disabled"])],
+        )
+
+        self.style.configure("Ghost.TButton", background=palette["ghost_bg"], foreground=palette["text_primary"])
+        self.style.map(
+            "Ghost.TButton",
+            background=[
+                ("pressed", palette["ghost_active"]),
+                ("active", palette["ghost_hover"]),
+            ],
+        )
+
+        self.style.configure(
+            "AccentCard.TSpinbox",
+            fieldbackground=palette["entry_bg"],
+            background=palette["entry_bg"],
+            foreground=palette["entry_fg"],
+        )
+        self.style.map(
+            "AccentCard.TSpinbox",
+            fieldbackground=[("disabled", palette["entry_bg"]), ("readonly", palette["entry_bg"])],
+            foreground=[("disabled", palette["text_muted"])],
+            arrowcolor=[("active", palette["accent_hover"]), ("!active", palette["accent_color"])],
+        )
+
+        self.style.configure(
+            "AccentCard.TCombobox",
+            fieldbackground=palette["entry_bg"],
+            background=palette["entry_bg"],
+            foreground=palette["entry_fg"],
+        )
+        self.style.map(
+            "AccentCard.TCombobox",
+            fieldbackground=[("readonly", palette["entry_bg"]), ("disabled", palette["entry_bg"])],
+            foreground=[("disabled", palette["text_muted"])],
+        )
+
+        if not initial:
+            self._apply_widget_theme()
+
+    def _apply_widget_theme(self) -> None:
+        if not hasattr(self, "_current_palette"):
+            return
+        palette = self._current_palette
+
+        if hasattr(self, "position_listbox"):
+            self.position_listbox.configure(
+                bg=palette["list_bg"],
+                fg=palette["list_fg"],
+                selectbackground=palette["accent_color"],
+                selectforeground=palette["text_on_accent"],
+                highlightbackground=palette["border_color"],
+                highlightcolor=palette["highlight"],
+                relief=tk.FLAT,
+            )
+
+        if hasattr(self, "log_text"):
+            self.log_text.configure(
+                background=palette["text_area_bg"],
+                foreground=palette["text_primary"],
+                insertbackground=palette["text_primary"],
+            )
+
+    def _on_dark_mode_toggle(self) -> None:
+        self._apply_theme()
+        self._persist_settings()
+
     # ------------------------------------------------------------------
     # UI construction helpers
     # ------------------------------------------------------------------
@@ -109,134 +393,247 @@ class AutoClickerGUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        container = ttk.Frame(self.root, padding=12)
+        container = ttk.Frame(self.root, padding=18, style="Background.TFrame")
         container.grid(row=0, column=0, sticky="nsew")
 
-        notebook = ttk.Notebook(container)
+        notebook = ttk.Notebook(container, style="App.TNotebook")
         notebook.pack(fill=tk.BOTH, expand=True)
 
-        manual_tab = ttk.Frame(notebook)
-        automation_tab = ttk.Frame(notebook)
+        manual_tab = ttk.Frame(notebook, style="Background.TFrame")
+        automation_tab = ttk.Frame(notebook, style="Background.TFrame")
+        options_tab = ttk.Frame(notebook, style="Background.TFrame")
         notebook.add(manual_tab, text="Manuelle Steuerung")
         notebook.add(automation_tab, text="Automatisierung")
+        notebook.add(options_tab, text="Optionen & Hotkeys")
 
-        manual_tab.columnconfigure(0, weight=3)
-        manual_tab.columnconfigure(1, weight=2)
-        manual_tab.rowconfigure(0, weight=1)
+        manual_tab.configure(padding=12)
+        automation_tab.configure(padding=12)
+        options_tab.configure(padding=12)
+
+        manual_tab.columnconfigure(0, weight=3, minsize=300)
+        manual_tab.columnconfigure(1, weight=5, minsize=500)
+        manual_tab.rowconfigure(0, weight=0)
         manual_tab.rowconfigure(1, weight=1)
+        manual_tab.rowconfigure(2, weight=0)
 
-        left_column = ttk.Frame(manual_tab)
-        left_column.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left_column.columnconfigure(0, weight=1)
-        left_column.rowconfigure(0, weight=1)
+        hero = ttk.Frame(manual_tab, style="Header.TFrame", padding=(18, 20))
+        hero.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+        ttk.Label(hero, text="Manuelle Steuerung", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(
+            hero,
+            text="Erstellen Sie präzise Klick-Sequenzen oder folgen Sie dem Cursor – inklusive Live-Statistiken.",
+            style="HeaderSubtitle.TLabel",
+        ).pack(anchor="w", pady=(6, 0))
 
-        right_column = ttk.Frame(manual_tab)
+        top_row = ttk.Frame(manual_tab, style="CardBody.TFrame")
+        top_row.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        top_row.columnconfigure(0, weight=3, minsize=340)
+        top_row.columnconfigure(1, weight=5, minsize=420)
+        top_row.rowconfigure(0, weight=1)
+
+        positions_container = ttk.Frame(top_row, style="CardBody.TFrame")
+        positions_container.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        positions_container.columnconfigure(0, weight=1)
+        positions_container.rowconfigure(0, weight=1)
+
+        right_column = ttk.Frame(top_row, style="CardBody.TFrame")
         right_column.grid(row=0, column=1, sticky="nsew")
         right_column.columnconfigure(0, weight=1)
+        right_column.rowconfigure(0, weight=1)
+        right_column.rowconfigure(1, weight=0)
 
-        self._build_position_section(left_column)
-        self._build_configuration_section(right_column)
-        self._build_options_section(right_column)
-        self._build_control_section(right_column)
-        self._build_statistics_section(right_column)
+        self._build_position_section(positions_container)
+        self._build_configuration_section(right_column, row=0)
+        self._build_manual_controls_section(right_column, row=1)
 
-        status_container = ttk.Frame(manual_tab)
-        status_container.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        status_container = ttk.Frame(manual_tab, style="Background.TFrame")
+        status_container.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(18, 0))
         status_container.columnconfigure(0, weight=1)
         status_container.rowconfigure(0, weight=1)
 
         self._build_status_section(status_container)
 
         self._build_automation_tab(automation_tab)
+        self._build_options_tab(options_tab)
 
     def _build_position_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Klick-Positionen", padding=10)
-        frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        frame = ttk.LabelFrame(parent, text="Klick-Positionen", padding=14, style="Card.TLabelframe")
+        frame.grid(row=0, column=0, sticky="nsew", pady=(0, 12))
         frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
 
-        self.position_listbox = tk.Listbox(frame, height=6)
-        self.position_listbox.grid(row=0, column=0, columnspan=3, sticky="nsew")
+        header = ttk.Frame(frame, style="Card.TFrame")
+        header.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 10))
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="Gespeicherte Ziele", font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(header, textvariable=self.position_count_var, style="Secondary.TLabel").grid(
+            row=0, column=1, sticky="e"
+        )
+
+        self.position_listbox = tk.Listbox(
+            frame,
+            height=9,
+            font=("Segoe UI", 10),
+            bd=0,
+            highlightthickness=0,
+            selectmode=tk.SINGLE,
+            selectbackground="#4e8cff",
+            selectforeground="#ffffff",
+        )
+        self.position_listbox.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(0, 6))
 
         scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=self.position_listbox.yview)
-        scrollbar.grid(row=0, column=3, sticky="ns")
+        scrollbar.grid(row=1, column=3, sticky="ns")
         self.position_listbox.configure(yscrollcommand=scrollbar.set)
 
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        btn_frame.columnconfigure((0, 1, 2, 3, 4), weight=1)
+        btn_frame = ttk.Frame(frame, style="Card.TFrame")
+        btn_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(0, 6))
+        btn_frame.columnconfigure((0, 1, 2), weight=1)
 
         self.add_current_button = ttk.Button(
-            btn_frame, text="Aktuelle Position", command=self._add_current_position
+            btn_frame,
+            text="Aktuelle Position",
+            command=self._add_current_position,
+            style="Ghost.TButton",
         )
-        self.add_current_button.grid(row=0, column=0, padx=2)
+        self.add_current_button.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
 
         self.add_custom_button = ttk.Button(
-            btn_frame, text="Benutzerdefiniert", command=self._add_custom_position
+            btn_frame,
+            text="Benutzerdefiniert",
+            command=self._add_custom_position,
+            style="Ghost.TButton",
         )
-        self.add_custom_button.grid(row=0, column=1, padx=2)
+        self.add_custom_button.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
 
         self.capture_button = ttk.Button(
-            btn_frame, text="Nächsten Klick aufnehmen", command=self._capture_next_position
+            btn_frame,
+            text="Nächsten Klick aufnehmen",
+            command=self._capture_next_position,
+            style="Accent.TButton",
         )
-        self.capture_button.grid(row=0, column=2, padx=2)
+        self.capture_button.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
 
         self.capture_cancel_button = ttk.Button(
-            btn_frame, text="Aufnahme stoppen", command=self._cancel_capture
+            btn_frame,
+            text="Aufnahme stoppen",
+            command=self._cancel_capture,
+            style="Danger.TButton",
         )
-        self.capture_cancel_button.grid(row=0, column=3, padx=2)
+        self.capture_cancel_button.grid(row=1, column=0, padx=4, pady=4, sticky="ew")
 
         self.remove_selected_button = ttk.Button(
-            btn_frame, text="Entfernen", command=self._remove_selected_position
+            btn_frame,
+            text="Entfernen",
+            command=self._remove_selected_position,
+            style="Ghost.TButton",
         )
-        self.remove_selected_button.grid(row=0, column=4, padx=2)
+        self.remove_selected_button.grid(row=1, column=1, padx=4, pady=4, sticky="ew")
 
         self.clear_all_button = ttk.Button(
-            btn_frame, text="Alle löschen", command=self._clear_all_positions
+            btn_frame,
+            text="Alle löschen",
+            command=self._clear_all_positions,
+            style="Ghost.TButton",
         )
-        self.clear_all_button.grid(row=0, column=5, padx=2)
+        self.clear_all_button.grid(row=1, column=2, padx=4, pady=4, sticky="ew")
+
+        ttk.Button(
+            btn_frame,
+            text="Duplizieren",
+            command=self._duplicate_selected_position,
+            style="Ghost.TButton",
+        ).grid(row=2, column=0, padx=4, pady=4, sticky="ew")
+
+        ttk.Button(
+            btn_frame,
+            text="Kopieren",
+            command=self._copy_position_to_clipboard,
+            style="Ghost.TButton",
+        ).grid(row=2, column=1, columnspan=2, padx=4, pady=4, sticky="ew")
 
         ttk.Label(frame, textvariable=self.capture_status_var).grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=3,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(10, 0),
         )
 
-    def _build_configuration_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Konfiguration", padding=10)
-        frame.pack(fill=tk.X, pady=(0, 10))
-        frame.columnconfigure(1, weight=1)
+        ttk.Separator(frame, orient=tk.HORIZONTAL).grid(row=4, column=0, columnspan=4, sticky="ew", pady=(12, 0))
 
-        ttk.Label(frame, text="Klicks pro Sekunde:").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(
+        ttk.Label(
             frame,
-            from_=0.1,
-            to=1000.0,
-            increment=0.1,
-            textvariable=self.click_rate_var,
-            width=8,
-        ).grid(row=0, column=1, sticky="w")
+            text="Tipp: Nutzen Sie den Debug-Modus, um Zielpunkte live auf dem Bildschirm zu sehen.",
+            style="Hint.TLabel",
+            wraplength=320,
+        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
-        ttk.Label(frame, text="Gesamtanzahl (0 = unendlich):").grid(row=1, column=0, sticky="w")
-        ttk.Spinbox(
-            frame,
-            from_=0,
-            to=1_000_000,
-            increment=10,
-            textvariable=self.total_clicks_var,
-            width=8,
-        ).grid(row=1, column=1, sticky="w")
+    def _build_configuration_section(self, parent: ttk.Frame, row: int) -> None:
+        parent.rowconfigure(row, weight=1)
+        frame = ttk.LabelFrame(parent, text="Konfiguration", padding=(18, 20), style="AccentCard.TLabelframe")
+        frame.grid(row=row, column=0, sticky="nsew", pady=(0, 14))
+        frame.columnconfigure(0, weight=0)
+        frame.columnconfigure(1, weight=1, minsize=320)
 
-        ttk.Label(frame, text="Klicktyp:").grid(row=2, column=0, sticky="w")
-        click_type_combo = ttk.Combobox(
-            frame,
-            textvariable=self.click_type_var,
-            values=[choice.value for choice in ClickType],
-            state="readonly",
-            width=10,
+        inputs = [
+            (
+                "Klicks pro Sekunde:",
+                ttk.Spinbox(
+                    frame,
+                    from_=0.1,
+                    to=1000.0,
+                    increment=0.1,
+                    textvariable=self.click_rate_var,
+                    justify="right",
+                    width=8,
+                    style="AccentCard.TSpinbox",
+                ),
+                (0, 6),
+            ),
+            (
+                "Gesamtanzahl (0 = unendlich):",
+                ttk.Spinbox(
+                    frame,
+                    from_=0,
+                    to=1_000_000,
+                    increment=10,
+                    textvariable=self.total_clicks_var,
+                    justify="right",
+                    width=8,
+                    style="AccentCard.TSpinbox",
+                ),
+                (0, 6),
+            ),
+            (
+                "Klicktyp:",
+                ttk.Combobox(
+                    frame,
+                    textvariable=self.click_type_var,
+                    values=[choice.value for choice in ClickType],
+                    state="readonly",
+                    style="AccentCard.TCombobox",
+                    width=18,
+                ),
+                (4, 6),
+            ),
+        ]
+
+        for row_index, (label_text, widget, pady) in enumerate(inputs):
+            ttk.Label(frame, text=label_text, style="AccentCardLabel.TLabel").grid(
+                row=row_index, column=0, sticky="w", pady=pady
+            )
+            widget.grid(row=row_index, column=1, sticky="ew", padx=(16, 0), pady=pady)
+            widget.configure(font=("Segoe UI", 10))
+
+        ttk.Label(frame, text="Modus:", style="AccentCardLabel.TLabel").grid(
+            row=len(inputs), column=0, sticky="w", pady=(6, 6)
         )
-        click_type_combo.grid(row=2, column=1, sticky="w")
-
-        ttk.Label(frame, text="Modus:").grid(row=3, column=0, sticky="w")
-        mode_frame = ttk.Frame(frame)
-        mode_frame.grid(row=3, column=1, sticky="w")
+        mode_frame = ttk.Frame(frame, style="AccentCard.TFrame")
+        mode_frame.grid(row=len(inputs), column=1, sticky="ew", pady=(6, 0), padx=(16, 0))
+        mode_frame.columnconfigure((0, 1), weight=1)
 
         ttk.Radiobutton(
             mode_frame,
@@ -244,7 +641,7 @@ class AutoClickerGUI:
             value=ClickMode.STATIC_SEQUENCE.value,
             variable=self.click_mode_var,
             command=self._on_click_mode_changed,
-        ).grid(row=0, column=0, padx=(0, 12))
+        ).grid(row=0, column=0, padx=(0, 12), sticky="w")
 
         ttk.Radiobutton(
             mode_frame,
@@ -252,67 +649,151 @@ class AutoClickerGUI:
             value=ClickMode.FOLLOW_CURSOR.value,
             variable=self.click_mode_var,
             command=self._on_click_mode_changed,
-        ).grid(row=0, column=1)
+        ).grid(row=0, column=1, sticky="w")
 
-    def _build_options_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Optionen", padding=10)
-        frame.pack(fill=tk.X, pady=(0, 10))
-        frame.columnconfigure(1, weight=1)
-
-        ttk.Checkbutton(
-            frame,
-            text="Im Hintergrund ausführen (Fenster darf im Vordergrund bleiben)",
-            variable=self.background_var,
-            command=self._persist_settings,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-
-        ttk.Checkbutton(
-            frame,
-            text="Debug-Modus: Positionen mit ✕ markieren",
-            variable=self.debug_overlay_var,
-            command=lambda: self._toggle_debug_overlay(self.debug_overlay_var.get()),
-        ).grid(row=1, column=0, columnspan=2, sticky="w")
-
-        ttk.Label(frame, text="Start-Hotkey:").grid(row=2, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.start_hotkey_var, width=12).grid(
-            row=2, column=1, sticky="w")
-
-        ttk.Label(frame, text="Stopp-Hotkey:").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.stop_hotkey_var, width=12).grid(
-            row=3, column=1, sticky="w")
-
-        ttk.Button(frame, text="Hotkeys anwenden", command=self._apply_hotkeys).grid(
-            row=2, column=2, rowspan=2, padx=(12, 0)
+        metrics_row = len(inputs) + 1
+        ttk.Separator(frame, orient=tk.HORIZONTAL).grid(
+            row=metrics_row, column=0, columnspan=2, sticky="ew", pady=(16, 10)
         )
+        ttk.Label(
+            frame,
+            text="Hinweis: 0 Gesamtanzahl bedeutet unbegrenztes Klicken.",
+            style="AccentCardHint.TLabel",
+        ).grid(row=metrics_row + 1, column=0, columnspan=2, sticky="w")
 
-        ttk.Label(frame, textvariable=self.monitor_info_var).grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        metrics_frame = ttk.Frame(frame, style="AccentCard.TFrame")
+        metrics_frame.grid(row=metrics_row + 2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        metrics_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            metrics_frame,
+            textvariable=self.click_interval_hint_var,
+            style="AccentCardHint.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            metrics_frame,
+            textvariable=self.estimated_duration_var,
+            style="AccentCardHint.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+    def _build_manual_controls_section(self, parent: ttk.Frame, row: int) -> None:
+        parent.rowconfigure(row, weight=0)
+        frame = ttk.LabelFrame(parent, text="Steuerung & Statistik", padding=(18, 20), style="Card.TLabelframe")
+        frame.grid(row=row, column=0, sticky="nsew", pady=(0, 14))
+        frame.columnconfigure(0, weight=1)
+
+        button_frame = ttk.Frame(frame, style="CardBody.TFrame")
+        button_frame.grid(row=0, column=0, sticky="ew")
+        button_frame.columnconfigure((0, 1, 2), weight=1)
+
+        self.start_button = ttk.Button(
+            button_frame,
+            text="Start",
+            command=self._start_manual_clicking,
+            style="Accent.TButton",
         )
+        self.start_button.grid(row=0, column=0, padx=(0, 8), pady=(0, 4), sticky="ew")
 
-    def _build_control_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Steuerung", padding=10)
-        frame.pack(fill=tk.X, pady=(0, 10))
-        frame.columnconfigure((0, 1), weight=1)
+        ttk.Button(
+            button_frame,
+            text="Stopp",
+            command=self._stop_manual_clicking,
+            style="Danger.TButton",
+        ).grid(row=0, column=1, padx=(8, 8), pady=(0, 4), sticky="ew")
 
-        self.start_button = ttk.Button(frame, text="Start", command=self._start_manual_clicking)
-        self.start_button.grid(row=0, column=0, padx=5, sticky="ew")
+        ttk.Button(
+            button_frame,
+            text="Statistiken zurücksetzen",
+            command=self._reset_manual_statistics,
+            style="Ghost.TButton",
+        ).grid(row=0, column=2, padx=(0, 0), pady=(0, 4), sticky="ew")
 
-        ttk.Button(frame, text="Stopp", command=self._stop_manual_clicking).grid(row=0, column=1, padx=5, sticky="ew")
+        ttk.Separator(frame, orient=tk.HORIZONTAL).grid(row=1, column=0, sticky="ew", pady=(12, 10))
 
-    def _build_statistics_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Live-Statistiken", padding=10)
-        frame.pack(fill=tk.X, pady=(0, 10))
-        frame.columnconfigure((0, 1), weight=1)
+        stats_frame = ttk.Frame(frame, style="CardBody.TFrame")
+        stats_frame.grid(row=2, column=0, sticky="ew")
+        stats_frame.columnconfigure((0, 1), weight=1)
 
-        ttk.Label(frame, textvariable=self.click_count_var, anchor="w").grid(
+        ttk.Label(stats_frame, textvariable=self.click_count_var, anchor="w").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(frame, textvariable=self.manual_cps_var, anchor="e").grid(
+        ttk.Label(stats_frame, textvariable=self.manual_cps_var, anchor="e").grid(
             row=0, column=1, sticky="e"
         )
 
+        ttk.Label(frame, textvariable=self.status_var).grid(row=3, column=0, sticky="w", pady=(12, 0))
+
+    def _build_options_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        container = ttk.Frame(parent, style="Background.TFrame", padding=12)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+
+        frame = ttk.LabelFrame(container, text="Optionen & Hotkeys", padding=(18, 20), style="Card.TLabelframe")
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+
+        options_frame = ttk.Frame(frame, style="CardBody.TFrame")
+        options_frame.grid(row=0, column=0, sticky="ew")
+        options_frame.columnconfigure(0, weight=1)
+
+        ttk.Checkbutton(
+            options_frame,
+            text="Dunkles Design aktivieren",
+            variable=self.dark_mode_var,
+            command=self._on_dark_mode_toggle,
+        ).grid(row=0, column=0, sticky="w")
+
+        ttk.Checkbutton(
+            options_frame,
+            text="Im Hintergrund ausführen (Fenster darf im Vordergrund bleiben)",
+            variable=self.background_var,
+            command=self._persist_settings,
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+        ttk.Checkbutton(
+            options_frame,
+            text="Debug-Modus: Positionen mit ✕ markieren",
+            variable=self.debug_overlay_var,
+            command=lambda: self._toggle_debug_overlay(self.debug_overlay_var.get()),
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).grid(row=1, column=0, sticky="ew", pady=(12, 10))
+
+        hotkey_frame = ttk.Frame(frame, style="CardBody.TFrame")
+        hotkey_frame.grid(row=2, column=0, sticky="ew")
+        hotkey_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(hotkey_frame, text="Start-Hotkey:").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Entry(hotkey_frame, textvariable=self.start_hotkey_var, width=14).grid(
+            row=0, column=1, sticky="ew", padx=(8, 16)
+        )
+
+        ttk.Label(hotkey_frame, text="Stopp-Hotkey:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(hotkey_frame, textvariable=self.stop_hotkey_var, width=14).grid(
+            row=1, column=1, sticky="ew", padx=(8, 16)
+        )
+
+        ttk.Button(
+            hotkey_frame,
+            text="Hotkeys anwenden",
+            command=self._apply_hotkeys,
+            style="Accent.TButton",
+        ).grid(row=0, column=2, rowspan=2, sticky="nswe")
+
+        ttk.Label(frame, textvariable=self.monitor_info_var, style="Hint.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(12, 0)
+        )
+        ttk.Label(
+            frame,
+            text="Tipp: Hinterlegte Hotkeys sind global aktiv. Nutzen Sie einzigartige Kombinationen.",
+            style="Hint.TLabel",
+            wraplength=360,
+        ).grid(row=4, column=0, sticky="w", pady=(8, 0))
     def _build_status_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.LabelFrame(parent, text="Status & Log", padding=10)
+        frame = ttk.LabelFrame(parent, text="Status & Log", padding=14, style="Card.TLabelframe")
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
@@ -322,61 +803,200 @@ class AutoClickerGUI:
         self.log_text = scrolledtext.ScrolledText(frame, height=10, state=tk.DISABLED, wrap=tk.WORD)
         self.log_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
-        ttk.Button(frame, text="Log exportieren", command=self._export_logs).grid(
-            row=2, column=0, sticky="e", pady=(8, 0)
-        )
+        button_bar = ttk.Frame(frame, style="Card.TFrame")
+        button_bar.grid(row=2, column=0, sticky="e", pady=(12, 0))
+        button_bar.columnconfigure((0, 1, 2), weight=0)
+
+        ttk.Button(
+            button_bar,
+            text="Log kopieren",
+            command=self._copy_logs_to_clipboard,
+            style="Ghost.TButton",
+        ).grid(row=0, column=0, padx=(0, 6))
+
+        ttk.Button(
+            button_bar,
+            text="Log leeren",
+            command=self._clear_log_output,
+            style="Ghost.TButton",
+        ).grid(row=0, column=1, padx=(0, 6))
+
+        ttk.Button(
+            button_bar,
+            text="Log exportieren",
+            command=self._export_logs,
+            style="Ghost.TButton",
+        ).grid(row=0, column=2)
+
+    def _clear_log_output(self) -> None:
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.delete("1.0", tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+        self.status_var.set("Status: Loganzeige gelöscht.")
+        self.logger.log_info("Loganzeige gelöscht.")
+
+    def _copy_logs_to_clipboard(self) -> None:
+        self.log_text.configure(state=tk.NORMAL)
+        content = self.log_text.get("1.0", tk.END).strip()
+        self.log_text.configure(state=tk.DISABLED)
+        if not content:
+            self.status_var.set("Status: Log ist leer.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
+        self.status_var.set("Status: Log in Zwischenablage.")
+        self.logger.log_info("Log in Zwischenablage kopiert.")
+
+    def _update_click_metrics(self) -> None:
+        try:
+            rate = float(self.click_rate_var.get())
+        except (tk.TclError, ValueError):
+            rate = 0.0
+
+        if rate > 0:
+            interval_ms = 1000.0 / rate
+            self.click_interval_hint_var.set(f"Intervall zwischen Klicks: {interval_ms:.1f} ms")
+        else:
+            self.click_interval_hint_var.set("Intervall zwischen Klicks: –")
+
+        try:
+            total = int(self.total_clicks_var.get())
+        except (tk.TclError, ValueError):
+            total = 0
+
+        if total == 0:
+            self.estimated_duration_var.set("Geschätzte Dauer: unbegrenzt (0 = unbegrenzt)")
+            return
+
+        if rate <= 0:
+            self.estimated_duration_var.set("Geschätzte Dauer: –")
+            return
+
+        seconds = total / rate
+        if seconds >= 3600:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            secs = int(seconds % 60)
+            self.estimated_duration_var.set(f"Geschätzte Dauer: {hours}h {minutes}m {secs}s")
+        elif seconds >= 60:
+            minutes = int(seconds // 60)
+            secs = int(seconds % 60)
+            self.estimated_duration_var.set(f"Geschätzte Dauer: {minutes}m {secs}s")
+        else:
+            self.estimated_duration_var.set(f"Geschätzte Dauer: {seconds:.1f}s")
 
     def _build_automation_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
 
-        info = ttk.Label(
-            parent,
+        hero = ttk.Frame(parent, style="Header.TFrame", padding=(18, 18))
+        hero.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+        ttk.Label(hero, text="Automatisierung", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(
+            hero,
             text=(
-                "Automatisierungsmodus: Führt Klicks im Hintergrund aus und kann das Fenster "
-                "automatisch minimieren. Die Einstellungen aus dem Tab \"Manuelle Steuerung\" "
-                "werden wiederverwendet."
+                "Kombinieren Sie Ihre gespeicherten Positionen mit einem Hintergrundlauf – inklusive Minimierungs-"
+                " und Endlosmodus. Die Konfiguration aus der manuellen Ansicht wird automatisch übernommen."
             ),
-            wraplength=720,
+            style="HeaderSubtitle.TLabel",
+            wraplength=700,
             justify=tk.LEFT,
-        )
-        info.grid(row=0, column=0, sticky="w", pady=(10, 10), padx=10)
+        ).pack(anchor="w", pady=(6, 0))
 
-        options = ttk.LabelFrame(parent, text="Automatisierungs-Optionen", padding=10)
-        options.grid(row=1, column=0, sticky="ew", padx=10)
-        options.columnconfigure(0, weight=1)
+        layout = ttk.Frame(parent, style="CardBody.TFrame")
+        layout.grid(row=1, column=0, sticky="nsew")
+        layout.columnconfigure(0, weight=1)
+        layout.columnconfigure(1, weight=1)
+        layout.rowconfigure(0, weight=1)
+
+        settings_card = ttk.LabelFrame(layout, text="Ausführungseinstellungen", padding=(18, 20), style="Card.TLabelframe")
+        settings_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        settings_card.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            settings_card,
+            text="Verhalten",
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         ttk.Checkbutton(
-            options,
+            settings_card,
             text="Fenster beim Start minimieren",
             variable=self.automation_minimize_var,
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=1, column=0, sticky="w")
 
         ttk.Checkbutton(
-            options,
+            settings_card,
             text="Unendlich klicken (ignoriert Gesamtanzahl)",
             variable=self.automation_infinite_var,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
 
-        controls = ttk.LabelFrame(parent, text="Automatisierung", padding=10)
-        controls.grid(row=2, column=0, sticky="ew", padx=10, pady=(10, 0))
-        controls.columnconfigure(0, weight=1)
+        ttk.Separator(settings_card, orient=tk.HORIZONTAL).grid(row=3, column=0, sticky="ew", pady=(16, 12))
 
-        ttk.Button(controls, text="Start (Hintergrund)", command=self._start_automation).grid(
-            row=0, column=0, padx=5, pady=(0, 4)
+        ttk.Label(
+            settings_card,
+            text="Die Automatisierung nutzt die gleichen Klickparameter wie der manuelle Tab.",
+            style="Hint.TLabel",
+            wraplength=320,
+        ).grid(row=4, column=0, sticky="w")
+
+        controls_card = ttk.LabelFrame(layout, text="Steuerung & Status", padding=(18, 20), style="Card.TLabelframe")
+        controls_card.grid(row=0, column=1, sticky="nsew")
+        controls_card.columnconfigure(0, weight=1)
+
+        button_frame = ttk.Frame(controls_card, style="CardBody.TFrame")
+        button_frame.grid(row=0, column=0, sticky="ew")
+        button_frame.columnconfigure((0, 1, 2), weight=1)
+
+        ttk.Button(
+            button_frame,
+            text="Start (Hintergrund)",
+            command=self._start_automation,
+            style="Accent.TButton",
+        ).grid(row=0, column=0, padx=(0, 8), pady=(0, 4), sticky="ew")
+        ttk.Button(
+            button_frame,
+            text="Stopp",
+            command=self._stop_automation,
+            style="Danger.TButton",
+        ).grid(row=0, column=1, padx=(8, 8), pady=(0, 4), sticky="ew")
+        ttk.Button(
+            button_frame,
+            text="Statistiken zurücksetzen",
+            command=self._reset_automation_statistics,
+            style="Ghost.TButton",
+        ).grid(row=0, column=2, padx=(0, 0), pady=(0, 4), sticky="ew")
+
+        ttk.Separator(controls_card, orient=tk.HORIZONTAL).grid(row=1, column=0, sticky="ew", pady=(12, 10))
+
+        status_box = ttk.Frame(controls_card, style="CardBody.TFrame")
+        status_box.grid(row=2, column=0, sticky="ew")
+        status_box.columnconfigure((0, 1), weight=1)
+
+        ttk.Label(status_box, textvariable=self.automation_status_var, anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w"
         )
-        ttk.Button(controls, text="Stop", command=self._stop_automation).grid(
-            row=0, column=1, padx=5, pady=(0, 4)
+        ttk.Label(status_box, textvariable=self.automation_clicks_var, anchor="w").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Label(status_box, textvariable=self.automation_cps_var, anchor="e").grid(
+            row=1, column=1, sticky="e", pady=(6, 0)
         )
 
-        ttk.Label(controls, textvariable=self.automation_status_var).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(controls, textvariable=self.automation_clicks_var).grid(
-            row=2, column=0, columnspan=2, sticky="w"
-        )
-        ttk.Label(controls, textvariable=self.automation_cps_var).grid(
-            row=3, column=0, columnspan=2, sticky="w"
-        )
+        info_card = ttk.LabelFrame(parent, text="Workflow-Tipp", padding=(18, 18), style="Card.TLabelframe")
+        info_card.grid(row=2, column=0, sticky="ew", pady=(18, 0))
+        info_card.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            info_card,
+            text=(
+                "Nutzen Sie die Hotkeys aus der manuellen Ansicht, um Automatisierung und manuelles Klicken ohne "
+                "Fensterwechsel zu starten oder zu stoppen. Aktivieren Sie bei Bedarf zuerst den Debug-Modus, um "
+                "die Zielpunkte zu prüfen."
+            ),
+            style="Hint.TLabel",
+            wraplength=720,
+        ).grid(row=0, column=0, sticky="w")
 
     # ------------------------------------------------------------------
     # Position management
@@ -466,6 +1086,33 @@ class AutoClickerGUI:
         removed = self.click_positions.pop(index)
         self._after_positions_updated(f"Position entfernt: {removed}")
 
+    def _duplicate_selected_position(self) -> None:
+        selection = self.position_listbox.curselection()
+        if not selection:
+            return
+        index = int(selection[0])
+        original = self.click_positions[index]
+        duplicate_label = f"{original.label} (Kopie)" if original.label else None
+        duplicate = ClickPosition(x=original.x, y=original.y, label=duplicate_label)
+        self.click_positions.insert(index + 1, duplicate)
+        self._after_positions_updated(
+            f"Position dupliziert: {duplicate.label or f'({duplicate.x}, {duplicate.y})'}"
+        )
+        self.position_listbox.selection_clear(0, tk.END)
+        self.position_listbox.selection_set(index + 1)
+
+    def _copy_position_to_clipboard(self) -> None:
+        selection = self.position_listbox.curselection()
+        if not selection:
+            return
+        position = self.click_positions[int(selection[0])]
+        text = f"{position.x}, {position.y}"
+        if position.label:
+            text = f"{position.label}: {text}"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._log_message(f"Position in Zwischenablage: {text}")
+
     def _clear_all_positions(self) -> None:
         if not self.click_positions:
             return
@@ -477,6 +1124,25 @@ class AutoClickerGUI:
         for idx, position in enumerate(self.click_positions, start=1):
             label = position.label or f"#{idx}"
             self.position_listbox.insert(tk.END, f"{idx}. {label} @ ({position.x}, {position.y})")
+        count = len(self.click_positions)
+        if count == 1:
+            self.position_count_var.set("1 Position gespeichert")
+        else:
+            self.position_count_var.set(f"{count} Positionen gespeichert")
+
+    def _reset_manual_statistics(self) -> None:
+        self.click_count_var.set("Ausgeführte Klicks: 0")
+        self.manual_cps_var.set("Aktuelle CPS: 0.00")
+        if "engine" in self._cps_tracker:
+            self._reset_cps_tracker("engine", 0)
+        self._log_message("Manuelle Statistiken zurückgesetzt.")
+
+    def _reset_automation_statistics(self) -> None:
+        self.automation_clicks_var.set("Klicks (Automatisierung): 0")
+        self.automation_cps_var.set("CPS (Automatisierung): 0.00")
+        if "automation_engine" in self._cps_tracker:
+            self._reset_cps_tracker("automation_engine", 0)
+        self._log_message("Automatisierungsstatistiken zurückgesetzt.")
 
     def _after_positions_updated(self, message: str) -> None:
         self._refresh_position_list()
@@ -841,6 +1507,7 @@ class AutoClickerGUI:
         self.settings.click_mode = ClickMode(self.click_mode_var.get())
         self.settings.run_in_background = bool(self.background_var.get())
         self.settings.debug_overlay_enabled = bool(self.debug_overlay_var.get())
+        self.settings.dark_mode_enabled = bool(self.dark_mode_var.get())
         self.settings.start_hotkey = self.start_hotkey_var.get().strip() or "F6"
         self.settings.stop_hotkey = self.stop_hotkey_var.get().strip() or "F7"
         self.settings_manager.save(self.settings)
