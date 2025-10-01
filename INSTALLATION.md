@@ -18,15 +18,50 @@ Navigate to the project folder and install the Python packages:
 pip install -r requirements.txt
 ```
 
-### Linux prerequisites
+### Linux prerequisites (Fix for evdev build error)
 
-Some desktop environments require additional system packages before Python can control the mouse and keyboard:
+On Linux, `pynput` pulls in `evdev`, which may need kernel header files and build tools. If you see an error like:
+
+> The 'linux/input.h' and 'linux/input-event-codes.h' include files are missing.
+
+install the headers and build essentials, then re-run pip. Use the command for your distro:
+
+Debian/Ubuntu (apt):
 
 ```bash
-sudo apt install python3-tk python3-dev scrot xclip
+sudo apt update
+sudo apt install build-essential python3-dev linux-headers-"$(uname -r)" python3-tk scrot xclip
 ```
 
-If you are using a distribution that does not provide `apt`, install the equivalent packages with your package manager. After installing the system packages, rerun `pip install -r requirements.txt`.
+Fedora (dnf):
+
+```bash
+sudo dnf install @development-tools python3-devel kernel-headers kernel-devel python3-tkinter scrot xclip
+```
+
+Arch/Manjaro (pacman):
+
+```bash
+sudo pacman -S --needed base-devel python linux-headers tk scrot xclip
+```
+
+openSUSE (zypper):
+
+```bash
+sudo zypper install -t pattern devel_basis
+sudo zypper install python3-devel kernel-default-devel python3-tk scrot xclip
+```
+
+Then run:
+
+```bash
+pip install -r requirements.txt --user
+```
+
+Notes:
+
+- If you're on Wayland and global hooks don't work, try an Xorg session.
+- Some distros package tkinter as a separate `python3-tk`/`python3-tkinter` package.
 
 ## 3. Run the Application
 

@@ -1,0 +1,10 @@
+{
+  "name": "Notepad demo",
+  "actions": [
+    { "type": "launch_process", "command": "notepad.exe", "wait": 0.8 },
+    { "type": "wait", "milliseconds": 600 },
+    { "type": "send_keys", "sequence": "<ENTER>" },
+    { "type": "type_text", "text": "Hallo aus der Automatisierung!" },
+    { "type": "send_keys", "sequence": "<ENTER>" }
+  ]
+}

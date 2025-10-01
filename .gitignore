@@ -1,0 +1,35 @@
+# Python cache and artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.spec
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# App specific
+settings.json
+logs/
