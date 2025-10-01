@@ -1,84 +1,96 @@
-"""
-INSTALLATION GUIDE
-Multi Auto Clicker
-"""
+# Installation Guide
 
-# Quick Start Guide
+## 1. Verify Python Installation
 
-## Step 1: Verify Python Installation
-Open PowerShell and run:
-```
+Open PowerShell (or your preferred terminal) and run:
+
+```powershell
 python --version
 ```
+
 You should see Python 3.10 or higher.
 
-## Step 2: Install Dependencies
-Navigate to the project folder and run:
-```
+## 2. Install Dependencies
+
+Navigate to the project folder and install the Python packages:
+
+```powershell
 pip install -r requirements.txt
 ```
 
-## Step 3: Run the Application
+### Linux prerequisites
+
+Some desktop environments require additional system packages before Python can control the mouse and keyboard:
+
+```bash
+sudo apt install python3-tk python3-dev scrot xclip
 ```
+
+If you are using a distribution that does not provide `apt`, install the equivalent packages with your package manager. After installing the system packages, rerun `pip install -r requirements.txt`.
+
+## 3. Run the Application
+
+```powershell
 python main.py
 ```
 
-## Step 4: First Use
+## 4. First Use
 
-1. Click "Add Current Position" to add your current mouse position
-   - Or use "Add Custom Position" to enter coordinates manually
-   
+1. Click **Add Current Position** to capture your current mouse position, or choose **Add Custom Position** and enter the coordinates manually.
 2. Configure your settings:
-   - Clicks per second: How fast to click (1-100)
-   - Total clicks: How many clicks total (0 = infinite)
-   - Click type: Left, Right, or Double click
-   
-3. Press "Start" or F6 to begin clicking
+   - **Clicks per second** – How fast to click (1–100).
+   - **Total clicks** – How many clicks to execute (0 = infinite).
+   - **Click type** – Left, Right, or Double click.
+3. Press **Start** or the start hotkey (default: F6) to begin.
+4. Press **Stop** or the stop hotkey (default: F7) to end the session.
 
-4. Press "Stop" or F7 to stop clicking
+## Default Hotkeys
 
-## Hotkeys
-
-- F6: Start clicking
-- F7: Stop clicking
-- Move mouse to corner: Emergency stop (failsafe)
+- `<F6>` — Start clicking
+- `<F7>` — Stop clicking
+- Move the mouse to a corner — Emergency stop (failsafe from PyAutoGUI)
 
 ## Troubleshooting
 
-### Issue: "pip is not recognized"
-Solution: Add Python to your PATH or use:
-```
+### "pip is not recognized"
+
+Add Python to your PATH or run:
+
+```powershell
 python -m pip install -r requirements.txt
 ```
 
-### Issue: "Permission denied" when using hotkeys
-Solution: Run PowerShell as Administrator
+### "Permission denied" when using hotkeys (Windows)
 
-### Issue: Clicks not working in some applications
-Solution: Some applications block simulated input. Try:
-- Running the app as administrator
-- Testing with a simple application like Notepad first
+Run the shell as Administrator and restart the app.
 
-### Issue: ModuleNotFoundError
-Solution: Ensure you're in the correct directory and have run:
-```
+### Clicks not working in some applications
+
+Some programs block simulated input. Try running the app as Administrator or test with a simple target like Notepad first.
+
+### `ModuleNotFoundError`
+
+Ensure you are in the project directory and run:
+
+```powershell
 pip install -r requirements.txt
 ```
 
+On Linux, double-check that the prerequisite system packages listed above are installed if `pyautogui` or `pynput` cannot be imported.
+
 ## Tips for Best Results
 
-1. **Test First**: Start with 1-2 clicks to verify positions are correct
-2. **Safety First**: Know where the screen corners are for emergency stop
-3. **Start Slow**: Begin with low click rates (1-5 CPS) then increase
-4. **Multiple Positions**: Add positions in the order you want them clicked
-5. **Check Logs**: Export logs if you encounter issues
+1. Test with a handful of clicks to confirm the targets are correct.
+2. Remember the screen corners for the emergency stop.
+3. Start with a low click rate (1–5 CPS) and increase gradually.
+4. Add positions in the exact order you want them executed.
+5. Use the log export feature if you need to diagnose issues.
 
 ## Support
 
-For issues or questions:
-1. Check the README.md for detailed documentation
-2. Review the code comments for technical details
-3. Ensure all requirements are installed correctly
+1. Review `README.md` for more detailed documentation.
+2. Explore code comments for technical insights.
+3. Confirm that you have installed all Python and system prerequisites.
 
 ---
-Built with Clean Code principles
+Built with Clean Code principles.

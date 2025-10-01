@@ -23,7 +23,6 @@ A professional, well-architected auto-clicker application built with Clean Code 
 ### Prerequisites
 
 - Python 3.10 or higher
-- Windows (due to `keyboard` library)
 
 ### Setup
 

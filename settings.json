@@ -27,7 +27,7 @@
   "click_mode": "static_sequence",
   "run_in_background": false,
   "debug_overlay_enabled": false,
-  "start_hotkey": "F6",
-  "stop_hotkey": "F7",
+  "start_hotkey": "F9",
+  "stop_hotkey": "F10",
   "dark_mode_enabled": true
 }
