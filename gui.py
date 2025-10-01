@@ -15,7 +15,8 @@ from __future__ import annotations
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
-from typing import Optional, List, Dict
+import json
+from typing import Optional, List, Dict, Any
 
 import pyautogui
 
@@ -28,6 +29,7 @@ from models import (
     ClickerState,
 )
 from clicker_engine import AutoClickerEngine
+from automation import AutomationEngine, AutomationScript
 from click_capture import ClickCaptureService
 from debug_overlay import DebugOverlayManager
 from hotkey_manager import HotkeyManager
@@ -61,6 +63,7 @@ class AutoClickerGUI:
         self.click_positions: List[ClickPosition] = list(self.settings.click_positions)
         self.engine: Optional[AutoClickerEngine] = None
         self.automation_engine: Optional[AutoClickerEngine] = None
+        self.script_engine: Optional[AutomationEngine] = None
         self.logger = StatusLogger()
         self.hotkey_manager = HotkeyManager(
             start_hotkey=self.settings.start_hotkey, stop_hotkey=self.settings.stop_hotkey
@@ -91,6 +94,16 @@ class AutoClickerGUI:
         self.automation_clicks_var = tk.StringVar(value="Klicks (Automatisierung): 0")
         self.manual_cps_var = tk.StringVar(value="Aktuelle CPS: 0.00")
         self.automation_cps_var = tk.StringVar(value="CPS (Automatisierung): 0.00")
+        self.script_status_var = tk.StringVar(value="Script: Bereit")
+        # Script-Builder (no-code) state
+        self.script_actions: List[Dict[str, Any]] = []
+        self.builder_action_type = tk.StringVar(value="type_text")
+        self.builder_text_var = tk.StringVar(value="Hello from Script!")
+        self.builder_sequence_var = tk.StringVar(value="<ENTER>")
+        self.builder_wait_ms_var = tk.IntVar(value=300)
+        self.builder_command_var = tk.StringVar(value="notepad.exe")
+        self.builder_args_var = tk.StringVar(value="")
+        self.builder_title_var = tk.StringVar(value="")
         self.monitor_info_var = tk.StringVar(value="Cursor: (0, 0) | Bildschirm 1")
         self.automation_minimize_var = tk.BooleanVar(value=True)
         self.automation_infinite_var = tk.BooleanVar(value=True)
@@ -998,6 +1011,96 @@ class AutoClickerGUI:
             wraplength=720,
         ).grid(row=0, column=0, sticky="w")
 
+        # Script Automation (Background without cursor)
+        script_card = ttk.LabelFrame(parent, text="Script-Automatisierung (Hintergrund)", padding=(18, 18), style="Card.TLabelframe")
+        script_card.grid(row=3, column=0, sticky="nsew", pady=(18, 0))
+        script_card.columnconfigure(0, weight=1)
+        # row 1 = builder, row 2 = editor
+        script_card.rowconfigure(2, weight=1)
+
+        toolbar = ttk.Frame(script_card, style="CardBody.TFrame")
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        for i in range(5):
+            toolbar.columnconfigure(i, weight=1)
+
+        ttk.Button(toolbar, text="Beispiel laden", command=self._load_example_script, style="Ghost.TButton").grid(row=0, column=0, padx=4, sticky="ew")
+        ttk.Button(toolbar, text="Öffnen…", command=self._open_script_file, style="Ghost.TButton").grid(row=0, column=1, padx=4, sticky="ew")
+        ttk.Button(toolbar, text="Speichern unter…", command=self._save_script_as, style="Ghost.TButton").grid(row=0, column=2, padx=4, sticky="ew")
+        ttk.Button(toolbar, text="Start (Script)", command=self._start_script_automation, style="Accent.TButton").grid(row=0, column=3, padx=4, sticky="ew")
+        ttk.Button(toolbar, text="Stopp (Script)", command=self._stop_script_automation, style="Danger.TButton").grid(row=0, column=4, padx=4, sticky="ew")
+
+        # Builder UI ----------------------------------------------------
+        builder = ttk.Frame(script_card, style="CardBody.TFrame")
+        builder.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
+        builder.columnconfigure(0, weight=3)
+        builder.columnconfigure(1, weight=2)
+
+        # Left: fields
+        fields = ttk.Frame(builder, style="CardBody.TFrame")
+        fields.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        for i in range(2):
+            fields.columnconfigure(i, weight=1)
+
+        ttk.Label(fields, text="Schnell-Bau: Aktion").grid(row=0, column=0, sticky="w")
+        type_cb = ttk.Combobox(fields, textvariable=self.builder_action_type, state="readonly",
+                               values=[
+                                   "type_text",
+                                   "send_keys",
+                                   "wait",
+                                   "launch_process",
+                                   "window_activate",
+                               ])
+        type_cb.grid(row=0, column=1, sticky="ew")
+        type_cb.bind("<<ComboboxSelected>>", lambda e: self._builder_refresh_field_states())
+
+        # Row 1+: dynamic fields (kept simple; irrelevant ones are disabled)
+        self._fld_text = ttk.Entry(fields, textvariable=self.builder_text_var)
+        self._fld_seq = ttk.Entry(fields, textvariable=self.builder_sequence_var)
+        self._fld_wait = ttk.Spinbox(fields, from_=0, to=600000, increment=50, textvariable=self.builder_wait_ms_var, width=10)
+        self._fld_cmd = ttk.Entry(fields, textvariable=self.builder_command_var)
+        self._fld_args = ttk.Entry(fields, textvariable=self.builder_args_var)
+        self._fld_title = ttk.Entry(fields, textvariable=self.builder_title_var)
+
+        # Labels
+        ttk.Label(fields, text="Text:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self._fld_text.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        ttk.Label(fields, text="Keys/Sequenz:").grid(row=2, column=0, sticky="w")
+        self._fld_seq.grid(row=2, column=1, sticky="ew")
+        ttk.Label(fields, text="Warte (ms):").grid(row=3, column=0, sticky="w")
+        self._fld_wait.grid(row=3, column=1, sticky="w")
+        ttk.Label(fields, text="Programm:").grid(row=4, column=0, sticky="w")
+        self._fld_cmd.grid(row=4, column=1, sticky="ew")
+        ttk.Label(fields, text="Argumente (Leerzeichen-getrennt):").grid(row=5, column=0, sticky="w")
+        self._fld_args.grid(row=5, column=1, sticky="ew")
+        ttk.Label(fields, text="Fenstertitel enthält:").grid(row=6, column=0, sticky="w")
+        self._fld_title.grid(row=6, column=1, sticky="ew")
+
+        btns = ttk.Frame(fields, style="CardBody.TFrame")
+        btns.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        for i in range(4):
+            btns.columnconfigure(i, weight=1)
+        ttk.Button(btns, text="Hinzufügen", style="Accent.TButton", command=self._builder_add_action).grid(row=0, column=0, sticky="ew", padx=3)
+        ttk.Button(btns, text="Entfernen", style="Ghost.TButton", command=self._builder_remove_action).grid(row=0, column=1, sticky="ew", padx=3)
+        ttk.Button(btns, text="Leeren", style="Ghost.TButton", command=self._builder_clear_actions).grid(row=0, column=2, sticky="ew", padx=3)
+        ttk.Button(btns, text="→ Editor übertragen", style="Ghost.TButton", command=self._builder_to_editor).grid(row=0, column=3, sticky="ew", padx=3)
+
+        # Right: actions list
+        right = ttk.Frame(builder, style="CardBody.TFrame")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        ttk.Label(right, text="Aktionen").grid(row=0, column=0, sticky="w")
+        self.script_actions_listbox = tk.Listbox(right, height=7, bd=0, highlightthickness=0)
+        self.script_actions_listbox.grid(row=1, column=0, sticky="nsew")
+
+        self._builder_refresh_field_states()
+
+        # Editor --------------------------------------------------------
+        self.script_text = scrolledtext.ScrolledText(script_card, height=10, wrap=tk.WORD)
+        self.script_text.grid(row=2, column=0, sticky="nsew")
+        self._populate_script_editor_with_default()
+
+        ttk.Label(script_card, textvariable=self.script_status_var).grid(row=3, column=0, sticky="w", pady=(8, 0))
+
     # ------------------------------------------------------------------
     # Position management
     # ------------------------------------------------------------------
@@ -1143,6 +1246,8 @@ class AutoClickerGUI:
         if "automation_engine" in self._cps_tracker:
             self._reset_cps_tracker("automation_engine", 0)
         self._log_message("Automatisierungsstatistiken zurückgesetzt.")
+        # Script status is independent
+        self.script_status_var.set("Script: Bereit")
 
     def _after_positions_updated(self, message: str) -> None:
         self._refresh_position_list()
@@ -1444,6 +1549,178 @@ class AutoClickerGUI:
             self.logger.log_error(message)
 
         self.status_var.set(f"Status: {message}")
+
+    # ------------------------------------------------------------------
+    # Script automation helpers
+    # ------------------------------------------------------------------
+    def _builder_refresh_field_states(self) -> None:
+        t = self.builder_action_type.get()
+        # Enable/disable inputs according to type
+        def set_state(widget, enabled: bool) -> None:
+            try:
+                widget.configure(state=(tk.NORMAL if enabled else tk.DISABLED))
+            except Exception:
+                pass
+        set_state(self._fld_text, t == "type_text")
+        set_state(self._fld_seq, t == "send_keys")
+        set_state(self._fld_wait, t == "wait")
+        set_state(self._fld_cmd, t == "launch_process")
+        set_state(self._fld_args, t == "launch_process")
+        set_state(self._fld_title, t == "window_activate")
+
+    def _builder_add_action(self) -> None:
+        t = self.builder_action_type.get()
+        try:
+            if t == "type_text":
+                action = {"type": t, "text": self.builder_text_var.get()}
+            elif t == "send_keys":
+                action = {"type": t, "sequence": self.builder_sequence_var.get()}
+            elif t == "wait":
+                ms = max(0, int(self.builder_wait_ms_var.get()))
+                action = {"type": t, "milliseconds": ms}
+            elif t == "launch_process":
+                args = [a for a in self.builder_args_var.get().split() if a]
+                action = {"type": t, "command": self.builder_command_var.get(), "args": args}
+            elif t == "window_activate":
+                action = {"type": t, "title": self.builder_title_var.get()}
+            else:
+                return
+            self.script_actions.append(action)
+            self._builder_refresh_list()
+        except Exception as exc:
+            messagebox.showerror("Builder", f"Aktion konnte nicht hinzugefügt werden: {exc}")
+
+    def _builder_remove_action(self) -> None:
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.script_actions):
+            del self.script_actions[idx]
+            self._builder_refresh_list()
+
+    def _builder_clear_actions(self) -> None:
+        if not self.script_actions:
+            return
+        self.script_actions.clear()
+        self._builder_refresh_list()
+
+    def _builder_refresh_list(self) -> None:
+        self.script_actions_listbox.delete(0, tk.END)
+        for i, a in enumerate(self.script_actions, start=1):
+            summary = a.get("type", "?")
+            if summary == "type_text":
+                summary += f" — {a.get('text','')}"
+            elif summary == "send_keys":
+                summary += f" — {a.get('sequence','')}"
+            elif summary == "wait":
+                summary += f" — {a.get('milliseconds',0)} ms"
+            elif summary == "launch_process":
+                summary += f" — {a.get('command','')}"
+            elif summary == "window_activate":
+                summary += f" — {a.get('title','')}"
+            self.script_actions_listbox.insert(tk.END, f"{i}. {summary}")
+
+    def _builder_to_editor(self) -> None:
+        try:
+            data = {"name": "Script", "actions": self.script_actions or []}
+            self.script_text.delete("1.0", tk.END)
+            self.script_text.insert(tk.END, json.dumps(data, ensure_ascii=False, indent=2))
+            self.script_status_var.set("Script: In Editor übertragen")
+        except Exception as exc:
+            self._log_message(f"Builder→Editor Fehler: {exc}", level="ERROR")
+    def _populate_script_editor_with_default(self) -> None:
+        template = {
+            "name": "Demo",
+            "actions": [
+                {"type": "wait", "milliseconds": 300},
+                {"type": "type_text", "text": "Hello from Script!"},
+                {"type": "send_keys", "sequence": "<ENTER>"},
+            ],
+        }
+        try:
+            self.script_text.delete("1.0", tk.END)
+            self.script_text.insert(tk.END, json.dumps(template, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+
+    def _load_example_script(self) -> None:
+        try:
+            import pathlib
+            path = pathlib.Path(__file__).with_name("automation").joinpath("examples", "example_notepad.json")
+            if path.exists():
+                content = path.read_text(encoding="utf-8")
+            else:
+                content = self.script_text.get("1.0", tk.END)
+            self.script_text.delete("1.0", tk.END)
+            self.script_text.insert(tk.END, content)
+            self.script_status_var.set("Script: Beispiel geladen")
+        except Exception as exc:
+            self.script_status_var.set("Script: Konnte Beispiel nicht laden")
+            self._log_message(f"Script-Beispiel konnte nicht geladen werden: {exc}", level="ERROR")
+
+    def _open_script_file(self) -> None:
+        try:
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(
+                filetypes=[("JSON", "*.json"), ("Alle Dateien", "*.*")]
+            )
+            if not path:
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.script_text.delete("1.0", tk.END)
+            self.script_text.insert(tk.END, content)
+            self.script_status_var.set(f"Script: Datei geladen")
+        except Exception as exc:
+            self.script_status_var.set("Script: Fehler beim Öffnen")
+            self._log_message(f"Script konnte nicht geöffnet werden: {exc}", level="ERROR")
+
+    def _save_script_as(self) -> None:
+        try:
+            from tkinter import filedialog
+            path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+            if not path:
+                return
+            content = self.script_text.get("1.0", tk.END).strip()
+            # Validate JSON before saving
+            json.loads(content)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self.script_status_var.set("Script: Gespeichert")
+        except Exception as exc:
+            self.script_status_var.set("Script: Fehler beim Speichern")
+            self._log_message(f"Script konnte nicht gespeichert werden: {exc}", level="ERROR")
+
+    def _start_script_automation(self) -> None:
+        # Don't run multiple
+        if self.script_engine and self.script_engine.is_running():
+            self._log_message("Script läuft bereits.")
+            return
+        raw = self.script_text.get("1.0", tk.END).strip()
+        try:
+            data = json.loads(raw)
+            script = AutomationScript.from_dict(data)
+            engine = AutomationEngine(script)
+            engine.on_log(lambda m: self._log_message(f"[Script] {m}"))
+            engine.on_done(lambda ok, msg: self._on_script_done(ok, msg))
+            self.script_engine = engine
+            self.script_status_var.set("Script: Läuft")
+            engine.start()
+        except Exception as exc:
+            messagebox.showerror("Script", f"Ungültiges Script: {exc}")
+            self.script_status_var.set("Script: Fehler")
+            self._log_message(f"Script konnte nicht gestartet werden: {exc}", level="ERROR")
+
+    def _stop_script_automation(self) -> None:
+        if self.script_engine and self.script_engine.is_running():
+            self.script_engine.cancel()
+            self.script_status_var.set("Script: Bereit")
+            self._log_message("Script gestoppt.")
+
+    def _on_script_done(self, ok: bool, msg: str) -> None:
+        self.script_status_var.set(f"Script: {'Fertig' if ok else 'Beendet'} ({msg})")
+        self._log_message(f"Script beendet: {msg}")
 
     # ------------------------------------------------------------------
     # Misc helpers
