@@ -107,6 +107,16 @@ class AutoClickerGUI:
         self.builder_command_var = tk.StringVar(value="notepad.exe")
         self.builder_args_var = tk.StringVar(value="")
         self.builder_title_var = tk.StringVar(value="")
+        self.builder_template_var = tk.StringVar(value="Vorlage wählen…")
+        # Builder window/widget placeholders (created on demand)
+        self._builder_win: Optional[tk.Toplevel] = None
+        self._fld_text = None
+        self._fld_seq = None
+        self._fld_wait = None
+        self._fld_cmd = None
+        self._fld_args = None
+        self._fld_title = None
+        self.script_actions_listbox: Optional[tk.Listbox] = None
         self.monitor_info_var = tk.StringVar(value="Cursor: (0, 0) | Bildschirm 1")
         self.automation_minimize_var = tk.BooleanVar(value=True)
         self.automation_infinite_var = tk.BooleanVar(value=True)
@@ -1507,12 +1517,18 @@ class AutoClickerGUI:
                 widget.configure(state=(tk.NORMAL if enabled else tk.DISABLED))
             except Exception:
                 pass
-        set_state(self._fld_text, t == "type_text")
-        set_state(self._fld_seq, t == "send_keys")
-        set_state(self._fld_wait, t == "wait")
-        set_state(self._fld_cmd, t == "launch_process")
-        set_state(self._fld_args, t == "launch_process")
-        set_state(self._fld_title, t == "window_activate")
+        if self._fld_text is not None:
+            set_state(self._fld_text, t == "type_text")
+        if self._fld_seq is not None:
+            set_state(self._fld_seq, t == "send_keys")
+        if self._fld_wait is not None:
+            set_state(self._fld_wait, t == "wait")
+        if self._fld_cmd is not None:
+            set_state(self._fld_cmd, t == "launch_process")
+        if self._fld_args is not None:
+            set_state(self._fld_args, t == "launch_process")
+        if self._fld_title is not None:
+            set_state(self._fld_title, t == "window_activate")
 
     def _builder_add_action(self) -> None:
         t = self.builder_action_type.get()
@@ -1537,6 +1553,8 @@ class AutoClickerGUI:
             messagebox.showerror("Builder", f"Aktion konnte nicht hinzugefügt werden: {exc}")
 
     def _builder_remove_action(self) -> None:
+        if not self.script_actions_listbox:
+            return
         sel = self.script_actions_listbox.curselection()
         if not sel:
             return
@@ -1546,6 +1564,8 @@ class AutoClickerGUI:
             self._builder_refresh_list()
 
     def _builder_move_action(self, delta: int) -> None:
+        if not self.script_actions_listbox:
+            return
         sel = self.script_actions_listbox.curselection()
         if not sel:
             return
@@ -1560,9 +1580,10 @@ class AutoClickerGUI:
         )
         self._builder_refresh_list()
         # Reselect moved item
-        self.script_actions_listbox.selection_clear(0, tk.END)
-        self.script_actions_listbox.selection_set(new_idx)
-        self.script_actions_listbox.see(new_idx)
+        if self.script_actions_listbox:
+            self.script_actions_listbox.selection_clear(0, tk.END)
+            self.script_actions_listbox.selection_set(new_idx)
+            self.script_actions_listbox.see(new_idx)
 
     def _builder_clear_actions(self) -> None:
         if not self.script_actions:
@@ -1600,6 +1621,8 @@ class AutoClickerGUI:
             messagebox.showerror("Vorlage", f"Vorlage konnte nicht eingefügt werden: {exc}")
 
     def _builder_refresh_list(self) -> None:
+        if not self.script_actions_listbox:
+            return
         self.script_actions_listbox.delete(0, tk.END)
         for i, a in enumerate(self.script_actions, start=1):
             summary = a.get("type", "?")
@@ -1614,6 +1637,125 @@ class AutoClickerGUI:
             elif summary == "window_activate":
                 summary += f" — {a.get('title','')}"
             self.script_actions_listbox.insert(tk.END, f"{i}. {summary}")
+
+    # ------------------------------------------------------------------
+    # Builder Window
+    # ------------------------------------------------------------------
+    def _open_builder_window(self) -> None:
+        if self._builder_win and tk.Toplevel.winfo_exists(self._builder_win):
+            try:
+                self._builder_win.deiconify()
+                self._builder_win.lift()
+                self._builder_win.focus_force()
+                return
+            except Exception:
+                pass
+
+        win = tk.Toplevel(self.root)
+        win.title("Script‑Builder")
+        win.geometry("760x520")
+        win.transient(self.root)
+        self._builder_win = win
+
+        container = ttk.Frame(win, padding=12, style="Background.TFrame")
+        container.pack(fill=tk.BOTH, expand=True)
+        container.columnconfigure(0, weight=3)
+        container.columnconfigure(1, weight=2)
+
+        # Left: fields
+        fields = ttk.Frame(container, style="CardBody.TFrame")
+        fields.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        for i in range(2):
+            fields.columnconfigure(i, weight=1)
+
+        ttk.Label(fields, text="Schnell-Bau: Aktion").grid(row=0, column=0, sticky="w")
+        type_cb = ttk.Combobox(
+            fields,
+            textvariable=self.builder_action_type,
+            state="readonly",
+            values=["type_text", "send_keys", "wait", "launch_process", "window_activate"],
+        )
+        type_cb.grid(row=0, column=1, sticky="ew")
+        type_cb.bind("<<ComboboxSelected>>", lambda e: self._builder_refresh_field_states())
+
+        # Row inputs
+        self._fld_text = ttk.Entry(fields, textvariable=self.builder_text_var)
+        self._fld_seq = ttk.Entry(fields, textvariable=self.builder_sequence_var)
+        self._fld_wait = ttk.Spinbox(fields, from_=0, to=600000, increment=50, textvariable=self.builder_wait_ms_var, width=10)
+        self._fld_cmd = ttk.Entry(fields, textvariable=self.builder_command_var)
+        self._fld_args = ttk.Entry(fields, textvariable=self.builder_args_var)
+        self._fld_title = ttk.Entry(fields, textvariable=self.builder_title_var)
+
+        ttk.Label(fields, text="Text:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self._fld_text.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        ttk.Label(fields, text="Keys/Sequenz:").grid(row=2, column=0, sticky="w")
+        self._fld_seq.grid(row=2, column=1, sticky="ew")
+        ttk.Label(fields, text="Warte (ms):").grid(row=3, column=0, sticky="w")
+        self._fld_wait.grid(row=3, column=1, sticky="w")
+        ttk.Label(fields, text="Programm:").grid(row=4, column=0, sticky="w")
+        self._fld_cmd.grid(row=4, column=1, sticky="ew")
+        ttk.Label(fields, text="Argumente (Leerzeichen-getrennt):").grid(row=5, column=0, sticky="w")
+        self._fld_args.grid(row=5, column=1, sticky="ew")
+        ttk.Label(fields, text="Fenstertitel enthält:").grid(row=6, column=0, sticky="w")
+        self._fld_title.grid(row=6, column=1, sticky="ew")
+
+        btns = ttk.Frame(fields, style="CardBody.TFrame")
+        btns.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        for i in range(6):
+            btns.columnconfigure(i, weight=1)
+        ttk.Button(btns, text="Hinzufügen", style="Accent.TButton", command=self._builder_add_action).grid(row=0, column=0, sticky="ew", padx=3)
+        ttk.Button(btns, text="Entfernen", style="Ghost.TButton", command=self._builder_remove_action).grid(row=0, column=1, sticky="ew", padx=3)
+        ttk.Button(btns, text="Leeren", style="Ghost.TButton", command=self._builder_clear_actions).grid(row=0, column=2, sticky="ew", padx=3)
+        ttk.Button(btns, text="→ Editor übertragen", style="Ghost.TButton", command=self._builder_to_editor).grid(row=0, column=3, sticky="ew", padx=3)
+        ttk.Combobox(
+            btns,
+            textvariable=self.builder_template_var,
+            state="readonly",
+            values=[
+                "Vorlage wählen…",
+                "Notepad: Start + Tippen + Enter",
+                "Nur Tippen + Enter",
+                "Warte + Fenster aktivieren",
+            ],
+            width=28,
+        ).grid(row=0, column=4, sticky="ew", padx=3)
+        ttk.Button(btns, text="Vorlage einfügen", style="Ghost.TButton", command=self._builder_insert_template).grid(row=0, column=5, sticky="ew", padx=3)
+
+        # Right: actions list
+        right = ttk.Frame(container, style="CardBody.TFrame")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        ttk.Label(right, text="Aktionen").grid(row=0, column=0, sticky="w")
+        self.script_actions_listbox = tk.Listbox(right, height=16, bd=0, highlightthickness=0)
+        self.script_actions_listbox.grid(row=1, column=0, sticky="nsew")
+
+        reorder = ttk.Frame(right, style="CardBody.TFrame")
+        reorder.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        reorder.columnconfigure((0, 1), weight=1)
+        ttk.Button(reorder, text="▲ Hoch", style="Ghost.TButton", command=lambda: self._builder_move_action(-1)).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(reorder, text="▼ Runter", style="Ghost.TButton", command=lambda: self._builder_move_action(1)).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
+        # Setup states and list
+        self._builder_refresh_field_states()
+        self._builder_refresh_list()
+
+        def on_close() -> None:
+            try:
+                self._close_builder_window()
+            finally:
+                win.destroy()
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+    def _close_builder_window(self) -> None:
+        # Clear widget references
+        self._builder_win = None
+        self.script_actions_listbox = None
+        self._fld_text = None
+        self._fld_seq = None
+        self._fld_wait = None
+        self._fld_cmd = None
+        self._fld_args = None
+        self._fld_title = None
 
     def _builder_to_editor(self) -> None:
         try:
