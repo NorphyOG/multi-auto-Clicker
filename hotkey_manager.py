@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Optional
 
-from pynput import keyboard
+try:
+    from pynput import keyboard  # type: ignore
+except Exception as _e:  # pragma: no cover - environment dependent
+    keyboard = None  # type: ignore
 
 
 class HotkeyManager:
@@ -27,7 +30,7 @@ class HotkeyManager:
         self._stop_hotkey = stop_hotkey
         self._start_callback: Optional[Callable[[], None]] = None
         self._stop_callback: Optional[Callable[[], None]] = None
-        self._listener: Optional[keyboard.GlobalHotKeys] = None
+        self._listener: Optional[object] = None
         self._is_registered = False
 
     def register_start_callback(self, callback: Callable[[], None]) -> None:
@@ -59,6 +62,11 @@ class HotkeyManager:
         if not hotkey_map:
             return False
 
+        if keyboard is None:
+            print("pynput/keyboard backend not available; global hotkeys disabled")
+            self._listener = None
+            self._is_registered = False
+            return False
         try:
             self._listener = keyboard.GlobalHotKeys(hotkey_map)
             self._listener.start()
@@ -75,7 +83,10 @@ class HotkeyManager:
             return
 
         if self._listener is not None:
-            self._listener.stop()
+            try:
+                self._listener.stop()  # type: ignore[attr-defined]
+            except Exception:
+                pass
             self._listener = None
 
         self._is_registered = False

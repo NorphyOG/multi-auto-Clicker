@@ -5,7 +5,10 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from pynput import mouse
+try:
+    from pynput import mouse  # type: ignore
+except Exception:  # pragma: no cover - environment dependent
+    mouse = None  # type: ignore
 import tkinter as tk
 
 
@@ -18,7 +21,7 @@ class ClickCaptureService:
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
-        self._listener: Optional[mouse.Listener] = None
+        self._listener: Optional[object] = None
         self._lock = threading.Lock()
         self._on_captured: Optional[CapturedCallback] = None
         self._on_error: Optional[ErrorCallback] = None
@@ -40,6 +43,8 @@ class ClickCaptureService:
             self._on_error = on_error
 
             try:
+                if mouse is None:
+                    raise RuntimeError("pynput/mouse backend not available; Mausaufzeichnung ist deaktiviert.")
                 self._listener = mouse.Listener(on_click=self._handle_click)
                 self._listener.start()
                 return True
@@ -71,7 +76,7 @@ class ClickCaptureService:
         self._listener = None
         if listener is not None:
             try:
-                listener.stop()
+                listener.stop()  # type: ignore[attr-defined]
             except Exception:
                 pass
 

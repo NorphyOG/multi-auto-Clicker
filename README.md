@@ -38,8 +38,11 @@ Im Tab „Automatisierung“:
 - Script-Builder (oben):
   - Aktionstyp wählen (type_text, send_keys, wait, launch_process, window_activate)
   - Felder ausfüllen, „Hinzufügen“ klicken (Liste rechts zeigt die Aktionen)
-  - „→ Editor übertragen“ erzeugt JSON unten
+  - Aktionen sortieren (▲/▼), Liste leeren/entfernen
+  - Vorlagen: z. B. „Notepad: Start + Tippen + Enter“
+  - „→ Editor übertragen“ erzeugt JSON unten; „Editor → Builder“ liest JSON wieder ein
 - Script-Editor (unten): JSON anpassen oder laden/speichern
+- Toolbar: Validieren hebt JSON-Fehlerzeile hervor
 - Start (Script) / Stopp (Script) führt das Script im Hintergrund aus
 
 Beispiel (JSON):
@@ -58,6 +61,7 @@ Hinweise:
 
 - Windows: Hintergrund-Tasten via pywinauto (wenn verfügbar), sonst Fallback pynput
 - Linux/macOS: Tasten an fokussiertes Fenster (systembedingt)
+- Linux: In Wayland-Sitzungen sind globale Hotkeys/Mausaufnahme eingeschränkt. Xorg empfohlen. Bei Build-Fehlern für evdev/python-xlib siehe INSTALLATION.md.
 
 ## Troubleshooting (Kurz)
 

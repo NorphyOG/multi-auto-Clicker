@@ -17,6 +17,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import json
 from typing import Optional, List, Dict, Any
+import sys
+import os
+import shutil
 
 import pyautogui
 
@@ -122,6 +125,9 @@ class AutoClickerGUI:
         self._on_click_mode_changed()
         self.debug_overlay.set_positions(self.click_positions)
         self.debug_overlay.toggle(self.debug_overlay_var.get())
+
+        # Platform-specific hints (Linux/Wayland, missing tools)
+        self._check_platform_hints()
 
         # Services -------------------------------------------------------
         self._setup_hotkeys()
@@ -1020,7 +1026,7 @@ class AutoClickerGUI:
 
         toolbar = ttk.Frame(script_card, style="CardBody.TFrame")
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        for i in range(5):
+        for i in range(8):
             toolbar.columnconfigure(i, weight=1)
 
         ttk.Button(toolbar, text="Beispiel laden", command=self._load_example_script, style="Ghost.TButton").grid(row=0, column=0, padx=4, sticky="ew")
@@ -1028,71 +1034,9 @@ class AutoClickerGUI:
         ttk.Button(toolbar, text="Speichern unter…", command=self._save_script_as, style="Ghost.TButton").grid(row=0, column=2, padx=4, sticky="ew")
         ttk.Button(toolbar, text="Start (Script)", command=self._start_script_automation, style="Accent.TButton").grid(row=0, column=3, padx=4, sticky="ew")
         ttk.Button(toolbar, text="Stopp (Script)", command=self._stop_script_automation, style="Danger.TButton").grid(row=0, column=4, padx=4, sticky="ew")
-
-        # Builder UI ----------------------------------------------------
-        builder = ttk.Frame(script_card, style="CardBody.TFrame")
-        builder.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
-        builder.columnconfigure(0, weight=3)
-        builder.columnconfigure(1, weight=2)
-
-        # Left: fields
-        fields = ttk.Frame(builder, style="CardBody.TFrame")
-        fields.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        for i in range(2):
-            fields.columnconfigure(i, weight=1)
-
-        ttk.Label(fields, text="Schnell-Bau: Aktion").grid(row=0, column=0, sticky="w")
-        type_cb = ttk.Combobox(fields, textvariable=self.builder_action_type, state="readonly",
-                               values=[
-                                   "type_text",
-                                   "send_keys",
-                                   "wait",
-                                   "launch_process",
-                                   "window_activate",
-                               ])
-        type_cb.grid(row=0, column=1, sticky="ew")
-        type_cb.bind("<<ComboboxSelected>>", lambda e: self._builder_refresh_field_states())
-
-        # Row 1+: dynamic fields (kept simple; irrelevant ones are disabled)
-        self._fld_text = ttk.Entry(fields, textvariable=self.builder_text_var)
-        self._fld_seq = ttk.Entry(fields, textvariable=self.builder_sequence_var)
-        self._fld_wait = ttk.Spinbox(fields, from_=0, to=600000, increment=50, textvariable=self.builder_wait_ms_var, width=10)
-        self._fld_cmd = ttk.Entry(fields, textvariable=self.builder_command_var)
-        self._fld_args = ttk.Entry(fields, textvariable=self.builder_args_var)
-        self._fld_title = ttk.Entry(fields, textvariable=self.builder_title_var)
-
-        # Labels
-        ttk.Label(fields, text="Text:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self._fld_text.grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        ttk.Label(fields, text="Keys/Sequenz:").grid(row=2, column=0, sticky="w")
-        self._fld_seq.grid(row=2, column=1, sticky="ew")
-        ttk.Label(fields, text="Warte (ms):").grid(row=3, column=0, sticky="w")
-        self._fld_wait.grid(row=3, column=1, sticky="w")
-        ttk.Label(fields, text="Programm:").grid(row=4, column=0, sticky="w")
-        self._fld_cmd.grid(row=4, column=1, sticky="ew")
-        ttk.Label(fields, text="Argumente (Leerzeichen-getrennt):").grid(row=5, column=0, sticky="w")
-        self._fld_args.grid(row=5, column=1, sticky="ew")
-        ttk.Label(fields, text="Fenstertitel enthält:").grid(row=6, column=0, sticky="w")
-        self._fld_title.grid(row=6, column=1, sticky="ew")
-
-        btns = ttk.Frame(fields, style="CardBody.TFrame")
-        btns.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        for i in range(4):
-            btns.columnconfigure(i, weight=1)
-        ttk.Button(btns, text="Hinzufügen", style="Accent.TButton", command=self._builder_add_action).grid(row=0, column=0, sticky="ew", padx=3)
-        ttk.Button(btns, text="Entfernen", style="Ghost.TButton", command=self._builder_remove_action).grid(row=0, column=1, sticky="ew", padx=3)
-        ttk.Button(btns, text="Leeren", style="Ghost.TButton", command=self._builder_clear_actions).grid(row=0, column=2, sticky="ew", padx=3)
-        ttk.Button(btns, text="→ Editor übertragen", style="Ghost.TButton", command=self._builder_to_editor).grid(row=0, column=3, sticky="ew", padx=3)
-
-        # Right: actions list
-        right = ttk.Frame(builder, style="CardBody.TFrame")
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        ttk.Label(right, text="Aktionen").grid(row=0, column=0, sticky="w")
-        self.script_actions_listbox = tk.Listbox(right, height=7, bd=0, highlightthickness=0)
-        self.script_actions_listbox.grid(row=1, column=0, sticky="nsew")
-
-        self._builder_refresh_field_states()
+        ttk.Button(toolbar, text="Validieren", command=self._validate_script_editor, style="Ghost.TButton").grid(row=0, column=5, padx=4, sticky="ew")
+        ttk.Button(toolbar, text="Editor → Builder", command=self._editor_to_builder, style="Ghost.TButton").grid(row=0, column=6, padx=4, sticky="ew")
+        ttk.Button(toolbar, text="Script‑Builder öffnen…", command=self._open_builder_window, style="Ghost.TButton").grid(row=0, column=7, padx=4, sticky="ew")
 
         # Editor --------------------------------------------------------
         self.script_text = scrolledtext.ScrolledText(script_card, height=10, wrap=tk.WORD)
@@ -1513,7 +1457,9 @@ class AutoClickerGUI:
     def _setup_hotkeys(self) -> None:
         self.hotkey_manager.register_start_callback(self._handle_hotkey_start)
         self.hotkey_manager.register_stop_callback(self._handle_hotkey_stop)
-        self.hotkey_manager.enable_hotkeys()
+        ok = self.hotkey_manager.enable_hotkeys()
+        if not ok:
+            self._log_message("Hotkeys konnten nicht global registriert werden. Prüfen Sie Systemberechtigungen.", level="WARNING")
 
     def _apply_hotkeys(self) -> None:
         start = self.start_hotkey_var.get().strip() or "F6"
@@ -1599,11 +1545,59 @@ class AutoClickerGUI:
             del self.script_actions[idx]
             self._builder_refresh_list()
 
+    def _builder_move_action(self, delta: int) -> None:
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        new_idx = idx + delta
+        if new_idx < 0 or new_idx >= len(self.script_actions):
+            return
+        # Swap actions
+        self.script_actions[idx], self.script_actions[new_idx] = (
+            self.script_actions[new_idx],
+            self.script_actions[idx],
+        )
+        self._builder_refresh_list()
+        # Reselect moved item
+        self.script_actions_listbox.selection_clear(0, tk.END)
+        self.script_actions_listbox.selection_set(new_idx)
+        self.script_actions_listbox.see(new_idx)
+
     def _builder_clear_actions(self) -> None:
         if not self.script_actions:
             return
         self.script_actions.clear()
         self._builder_refresh_list()
+
+    def _builder_insert_template(self) -> None:
+        name = (self.builder_template_var.get() or "").strip()
+        if not name or name == "Vorlage wählen…":
+            return
+        try:
+            if name == "Notepad: Start + Tippen + Enter":
+                tpl = [
+                    {"type": "launch_process", "command": "notepad.exe", "args": []},
+                    {"type": "wait", "milliseconds": 400},
+                    {"type": "type_text", "text": "Hello from Script!"},
+                    {"type": "send_keys", "sequence": "<ENTER>"},
+                ]
+            elif name == "Nur Tippen + Enter":
+                tpl = [
+                    {"type": "type_text", "text": self.builder_text_var.get() or "Hello"},
+                    {"type": "send_keys", "sequence": "<ENTER>"},
+                ]
+            elif name == "Warte + Fenster aktivieren":
+                tpl = [
+                    {"type": "wait", "milliseconds": max(0, int(self.builder_wait_ms_var.get()))},
+                    {"type": "window_activate", "title": self.builder_title_var.get() or ""},
+                ]
+            else:
+                tpl = []
+            self.script_actions.extend(tpl)
+            self._builder_refresh_list()
+        except Exception as exc:
+            messagebox.showerror("Vorlage", f"Vorlage konnte nicht eingefügt werden: {exc}")
 
     def _builder_refresh_list(self) -> None:
         self.script_actions_listbox.delete(0, tk.END)
@@ -1629,6 +1623,75 @@ class AutoClickerGUI:
             self.script_status_var.set("Script: In Editor übertragen")
         except Exception as exc:
             self._log_message(f"Builder→Editor Fehler: {exc}", level="ERROR")
+
+    def _editor_to_builder(self) -> None:
+        try:
+            raw = self.script_text.get("1.0", tk.END).strip()
+            data = json.loads(raw)
+            actions = data.get("actions", [])
+            if not isinstance(actions, list):
+                raise ValueError("'actions' muss eine Liste sein")
+            # Minimal sanitize: keep only known keys
+            sanitized = []
+            for a in actions:
+                if not isinstance(a, dict) or "type" not in a:
+                    continue
+                t = a.get("type")
+                if t == "type_text":
+                    sanitized.append({"type": t, "text": a.get("text", "")})
+                elif t == "send_keys":
+                    sanitized.append({"type": t, "sequence": a.get("sequence", "")})
+                elif t == "wait":
+                    ms = int(a.get("milliseconds", 0) or 0)
+                    sanitized.append({"type": t, "milliseconds": max(0, ms)})
+                elif t == "launch_process":
+                    args = a.get("args", [])
+                    if not isinstance(args, list):
+                        args = []
+                    sanitized.append({"type": t, "command": a.get("command", ""), "args": args})
+                elif t == "window_activate":
+                    sanitized.append({"type": t, "title": a.get("title", "")})
+            self.script_actions = sanitized
+            self._builder_refresh_list()
+            self.script_status_var.set("Script: In Builder übertragen")
+        except Exception as exc:
+            messagebox.showerror("Editor", f"Konnte Aktionen nicht laden: {exc}")
+
+    def _validate_script_editor(self) -> None:
+        # Clear previous error highlight
+        try:
+            self.script_text.tag_delete("json_error")
+        except Exception:
+            pass
+        self.script_text.tag_configure("json_error", background="#ffdddd")
+        raw = self.script_text.get("1.0", tk.END).strip()
+        if not raw:
+            self.script_status_var.set("Script: Leer")
+            return
+        try:
+            json.loads(raw)
+            self.script_status_var.set("Script: JSON gültig")
+        except Exception as exc:
+            # Try to extract position
+            line = 1
+            col = 0
+            msg = str(exc)
+            try:
+                # JSONDecodeError has lineno & colno
+                line = getattr(exc, 'lineno', 1) or 1
+                col = getattr(exc, 'colno', 0) or 0
+            except Exception:
+                pass
+            # Highlight the error line
+            try:
+                start = f"{line}.0"
+                end = f"{line}.end"
+                self.script_text.tag_add("json_error", start, end)
+                self.script_text.see(start)
+            except Exception:
+                pass
+            self.script_status_var.set(f"Script: JSON Fehler (Zeile {line}, Spalte {col})")
+            self._log_message(f"JSON-Validierung: {msg}", level="WARNING")
     def _populate_script_editor_with_default(self) -> None:
         template = {
             "name": "Demo",
@@ -1799,3 +1862,29 @@ class AutoClickerGUI:
             self.root.after_cancel(self.monitor_job)
         self._persist_settings()
         self.root.destroy()
+
+    # ------------------------------------------------------------------
+    # Platform checks (Linux)
+    # ------------------------------------------------------------------
+    def _check_platform_hints(self) -> None:
+        try:
+            if not sys.platform.startswith("linux"):
+                return
+            msgs: List[str] = []
+            session = (os.environ.get("XDG_SESSION_TYPE", "").strip().lower())
+            if session == "wayland":
+                msgs.append("Linux/Wayland erkannt – globale Hotkeys und Mausaufzeichnung sind ggf. eingeschränkt. Xorg-Sitzung empfohlen.")
+            # python-xlib for pynput
+            try:
+                import Xlib  # type: ignore
+                _ = Xlib  # silence unused
+            except Exception:
+                msgs.append("Python-Xlib fehlt – installieren Sie 'python-xlib' (sollte via requirements automatisch mitkommen).")
+            # scrot for screenshots (pyautogui dependency on many distros)
+            if shutil.which("scrot") is None:
+                msgs.append("'scrot' nicht gefunden – pyautogui Screenshots sind ggf. eingeschränkt. Installieren Sie das Paket Ihrer Distribution.")
+            for m in msgs:
+                self._log_message(m, level="WARNING")
+        except Exception:
+            # Never break startup because of environment checks
+            pass
