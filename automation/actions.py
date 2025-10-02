@@ -106,8 +106,10 @@ class SendKeysAction(BaseAction):
             return
         # Try Windows backend first
         if sys.platform.startswith("win"):
-            pw_ok = _try_pywinauto_send_keys(self.sequence, ctx)
+            pw_ok = _try_pywinauto_send_keys(self.sequence, ctx, pause=0.02)
             if pw_ok:
+                # Small stabilization delay so next action doesn't start too early
+                ctx.sleep(0.05)
                 return
         # Fallback to pynput
         kb_cls, key_mod = _get_pynput()
@@ -141,6 +143,8 @@ class SendKeysAction(BaseAction):
                     kb.press(" "); kb.release(" ")
                 else:
                     kb.press(mapped); kb.release(mapped)
+        # Give the target app a moment to process
+        ctx.sleep(0.05)
 
 
 def _tokenize_keys(sequence: str) -> List[str]:
@@ -181,15 +185,22 @@ class TypeTextAction(BaseAction):
     def run(self, ctx: "RunContext") -> None:
         if not self.text:
             return
+        # Prefer pywinauto on Windows with a tiny pause to prevent dropped chars
         if sys.platform.startswith("win"):
-            if _try_pywinauto_send_keys(self.text, ctx):
+            if _try_pywinauto_send_keys(self.text, ctx, pause=0.015):
+                ctx.sleep(0.1)
                 return
         kb_cls, _key_mod = _get_pynput()
         if kb_cls is None or _key_mod is None:
             raise ActionError("No keyboard backend available (install pynput)")
         kb = kb_cls()
+        # Type per character with a very small delay to increase reliability
         for ch in self.text:
             kb.press(ch); kb.release(ch)
+            # 10ms is enough for most apps; keep it tiny to stay fast
+            ctx.sleep(0.01)
+        # Stabilize before next action
+        ctx.sleep(0.1)
 
 
 @dataclass
@@ -323,13 +334,17 @@ def _get_pynput_mouse() -> Tuple[Optional[Any], Optional[Any]]:
         return None, None
 
 
-def _try_pywinauto_send_keys(text: str, ctx: "RunContext") -> bool:
-    """Try to send keys via pywinauto on Windows; return True on success."""
+def _try_pywinauto_send_keys(text: str, ctx: "RunContext", *, pause: float = 0.0) -> bool:
+    """Try to send keys via pywinauto on Windows; return True on success.
+
+    pause: small delay (seconds) between characters to improve reliability.
+    """
     if not sys.platform.startswith("win"):
         return False
     try:
         from pywinauto.keyboard import send_keys as pw_send_keys  # type: ignore
-        pw_send_keys(text, with_spaces=True, pause=0.0)
+        # Use a tiny non-zero pause to avoid dropped characters in some apps
+        pw_send_keys(text, with_spaces=True, pause=max(0.0, float(pause)))
         return True
     except Exception as e:  # pragma: no cover
         ctx.log(f"pywinauto send_keys failed: {e}")

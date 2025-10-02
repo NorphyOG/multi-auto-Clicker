@@ -50,13 +50,31 @@ class AutomationEngine:
     def _worker(self) -> None:
         ctx = RunContext(logger=self._log)
         try:
-            for idx, action in enumerate(self._script.actions):
-                if self._stop.is_set():
-                    self._finish(False, "Aborted")
-                    return
-                self._log(f"[{idx+1}/{len(self._script.actions)}] {action.__class__.__name__}")
-                action.run(ctx)
-            self._finish(True, "Completed")
+            iteration = 0
+            total_actions = len(self._script.actions)
+            # Determine loop behavior
+            repeat_until_stopped = bool(getattr(self._script, "repeat_until_stopped", False))
+            max_repeats = getattr(self._script, "repeat_count", None)
+            if not repeat_until_stopped and (max_repeats is None or max_repeats < 1):
+                max_repeats = 1
+            while not self._stop.is_set():
+                iteration += 1
+                self._log(f"Loop {iteration}")
+                for idx, action in enumerate(self._script.actions):
+                    if self._stop.is_set():
+                        self._finish(False, "Aborted")
+                        return
+                    self._log(f"[{idx+1}/{total_actions}] {action.__class__.__name__}")
+                    action.run(ctx)
+                # End of one iteration
+                if not repeat_until_stopped:
+                    if max_repeats is not None and iteration >= max_repeats:
+                        break
+            if self._stop.is_set():
+                self._finish(False, "Aborted")
+            else:
+                done_msg = "Completed" if (not repeat_until_stopped) else "Stopped"
+                self._finish(True, done_msg)
         except Exception as e:  # pragma: no cover - runtime path
             self._finish(False, f"Error: {e}")
 

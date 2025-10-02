@@ -116,6 +116,9 @@ class AutoClickerGUI:
         self.builder_scroll_amount_var = tk.IntVar(value=300)
         self.builder_scroll_horizontal_var = tk.BooleanVar(value=False)
         self.builder_autosync_var = tk.BooleanVar(value=True)
+        # Loop builder vars
+        self.builder_repeat_count_var = tk.IntVar(value=1)
+        self.builder_until_stopped_var = tk.BooleanVar(value=False)
         # Builder window/widget placeholders (created on demand)
         self._builder_win = None
         self._fld_text = None
@@ -134,6 +137,13 @@ class AutoClickerGUI:
         self.estimated_duration_var = tk.StringVar(value="")
         # Builder capture state
         self._builder_capture_in_progress = False
+
+        # Autosync traces for loop fields
+        try:
+            self.builder_repeat_count_var.trace_add("write", lambda *_: self._builder_maybe_autosync())
+            self.builder_until_stopped_var.trace_add("write", lambda *_: self._builder_maybe_autosync())
+        except Exception:
+            pass
 
         self.click_rate_var.trace_add("write", lambda *_: self._update_click_metrics())
         self.total_clicks_var.trace_add("write", lambda *_: self._update_click_metrics())
@@ -1524,6 +1534,13 @@ class AutoClickerGUI:
             self.root.after(0, self._stop_manual_clicking)
         if self.automation_engine and self.automation_engine.is_running():
             self.root.after(0, self._stop_automation)
+        # Also stop any running script automation loop
+        if self.script_engine and self.script_engine.is_running():
+            try:
+                self.script_engine.cancel()
+                self.script_status_var.set("Script: Gestoppt")
+            except Exception:
+                pass
 
     def _log_message(self, message: str, level: str = "INFO") -> None:
         self.log_text.configure(state=tk.NORMAL)
@@ -2014,6 +2031,27 @@ class AutoClickerGUI:
             width=20,
         ).grid(row=10, column=0, sticky="ew")
         ttk.Button(sidebar, text="Vorlage einfügen", style="Ghost.TButton", command=self._builder_insert_template).grid(row=11, column=0, sticky="ew", pady=(4,0))
+        # Loop controls
+        ttk.Separator(sidebar, orient="horizontal").grid(row=12, column=0, sticky="ew", pady=6)
+        loop_frame = ttk.Frame(sidebar)
+        loop_frame.grid(row=13, column=0, sticky="ew")
+        loop_frame.columnconfigure(1, weight=1)
+        ttk.Label(loop_frame, text="Wiederholungen:").grid(row=0, column=0, sticky="w")
+        repeat_spin = ttk.Spinbox(loop_frame, from_=1, to=1000000, increment=1, textvariable=self.builder_repeat_count_var, width=8)
+        repeat_spin.grid(row=0, column=1, sticky="ew", padx=(6,0))
+        until_chk = ttk.Checkbutton(loop_frame, text="Bis Stop", variable=self.builder_until_stopped_var)
+        until_chk.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6,0))
+        # Disable repeat when until_stopped is enabled
+        def _toggle_repeat_state(*_args):
+            try:
+                repeat_spin.configure(state=(tk.DISABLED if self.builder_until_stopped_var.get() else tk.NORMAL))
+            except Exception:
+                pass
+        _toggle_repeat_state()
+        try:
+            self.builder_until_stopped_var.trace_add("write", lambda *_: _toggle_repeat_state())
+        except Exception:
+            pass
 
         # Right: actions list (bottom area of main)
         right = ttk.Frame(main, style="CardBody.TFrame")
@@ -2073,6 +2111,13 @@ class AutoClickerGUI:
     def _builder_to_editor(self) -> None:
         try:
             data = {"name": "Script", "actions": self.script_actions or []}
+            # Loop settings
+            if bool(self.builder_until_stopped_var.get()):
+                data["until_stopped"] = True
+            else:
+                rc = int(self.builder_repeat_count_var.get() or 1)
+                if rc > 1:
+                    data["repeat"] = rc
             self.script_text.delete("1.0", tk.END)
             self.script_text.insert(tk.END, json.dumps(data, ensure_ascii=False, indent=2))
             self.script_status_var.set("Script: In Editor übertragen")
@@ -2118,6 +2163,17 @@ class AutoClickerGUI:
                 elif t == "scroll":
                     sanitized.append({"type": t, "amount": int(a.get("amount", 0) or 0), "horizontal": bool(a.get("horizontal", False))})
             self.script_actions = sanitized
+            # Loop settings
+            try:
+                if bool(data.get("until_stopped", False)):
+                    self.builder_until_stopped_var.set(True)
+                else:
+                    rc = int(data.get("repeat", 1) or 1)
+                    self.builder_repeat_count_var.set(max(1, rc))
+                    self.builder_until_stopped_var.set(False)
+            except Exception:
+                self.builder_repeat_count_var.set(1)
+                self.builder_until_stopped_var.set(False)
             self._builder_refresh_list()
             self.script_status_var.set("Script: In Builder übertragen")
         except Exception as exc:
@@ -2466,8 +2522,20 @@ class AutoClickerGUI:
     def _on_builder_click_captured(self, x: int, y: int) -> None:
         self._builder_capture_in_progress = False
         try:
-            self.builder_click_x_var.set(str(int(x)))
-            self.builder_click_y_var.set(str(int(y)))
+            # Clamp to monitor bounds to avoid invalid positions on multi‑monitor
+            mons = self._get_monitors()
+            if mons:
+                # Find monitor for (x,y); if none, clamp to overall extents
+                min_x = min(m["x"] for m in mons)
+                min_y = min(m["y"] for m in mons)
+                max_x = max(m["x"] + m["width"] - 1 for m in mons)
+                max_y = max(m["y"] + m["height"] - 1 for m in mons)
+                xx = max(min_x, min(int(x), max_x))
+                yy = max(min_y, min(int(y), max_y))
+            else:
+                xx, yy = int(x), int(y)
+            self.builder_click_x_var.set(str(xx))
+            self.builder_click_y_var.set(str(yy))
         except Exception:
             pass
 
@@ -2481,8 +2549,19 @@ class AutoClickerGUI:
     def _builder_set_xy_from_cursor(self) -> None:
         try:
             x, y = pyautogui.position()
-            self.builder_click_x_var.set(str(int(x)))
-            self.builder_click_y_var.set(str(int(y)))
+            # Same clamping as capture to be consistent across monitors
+            mons = self._get_monitors()
+            if mons:
+                min_x = min(m["x"] for m in mons)
+                min_y = min(m["y"] for m in mons)
+                max_x = max(m["x"] + m["width"] - 1 for m in mons)
+                max_y = max(m["y"] + m["height"] - 1 for m in mons)
+                xx = max(min_x, min(int(x), max_x))
+                yy = max(min_y, min(int(y), max_y))
+            else:
+                xx, yy = int(x), int(y)
+            self.builder_click_x_var.set(str(xx))
+            self.builder_click_y_var.set(str(yy))
         except Exception:
             pass
 

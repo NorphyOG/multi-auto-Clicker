@@ -67,8 +67,20 @@ class ClickCaptureService:
 
         self._stop_listener()
 
+        # Normalize coordinates using pyautogui to match the coordinate system
+        # used later for clicking. This avoids DPI scaling issues on multi‑monitor
+        # setups (e.g., 4K secondary display with scaling).
+        nx, ny = None, None
+        try:
+            import pyautogui  # type: ignore
+            cx, cy = pyautogui.position()
+            nx, ny = int(cx), int(cy)
+        except Exception:
+            # Fallback to pynput-provided coordinates
+            nx, ny = int(x), int(y)
+
         if self._on_captured:
-            self._notify_capture(int(x), int(y))
+            self._notify_capture(nx, ny)
         return False
 
     def _stop_listener(self) -> None:
