@@ -16,7 +16,7 @@ import time
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import sys
 import os
 import shutil
@@ -108,21 +108,32 @@ class AutoClickerGUI:
         self.builder_args_var = tk.StringVar(value="")
         self.builder_title_var = tk.StringVar(value="")
         self.builder_template_var = tk.StringVar(value="Vorlage wählen…")
+        # Mouse/Scroll builder vars
+        self.builder_click_x_var = tk.StringVar(value="")  # allow blank for current cursor
+        self.builder_click_y_var = tk.StringVar(value="")
+        self.builder_click_button_var = tk.StringVar(value="left")
+        self.builder_click_count_var = tk.IntVar(value=1)
+        self.builder_scroll_amount_var = tk.IntVar(value=300)
+        self.builder_scroll_horizontal_var = tk.BooleanVar(value=False)
+        self.builder_autosync_var = tk.BooleanVar(value=True)
         # Builder window/widget placeholders (created on demand)
-        self._builder_win: Optional[tk.Toplevel] = None
+        self._builder_win = None
         self._fld_text = None
         self._fld_seq = None
         self._fld_wait = None
         self._fld_cmd = None
         self._fld_args = None
         self._fld_title = None
-        self.script_actions_listbox: Optional[tk.Listbox] = None
+        self.script_actions_listbox = None
+        self._builder_context_menu = None
         self.monitor_info_var = tk.StringVar(value="Cursor: (0, 0) | Bildschirm 1")
         self.automation_minimize_var = tk.BooleanVar(value=True)
         self.automation_infinite_var = tk.BooleanVar(value=True)
         self.position_count_var = tk.StringVar(value="")
         self.click_interval_hint_var = tk.StringVar(value="")
         self.estimated_duration_var = tk.StringVar(value="")
+        # Builder capture state
+        self._builder_capture_in_progress = False
 
         self.click_rate_var.trace_add("write", lambda *_: self._update_click_metrics())
         self.total_clicks_var.trace_add("write", lambda *_: self._update_click_metrics())
@@ -148,8 +159,10 @@ class AutoClickerGUI:
 
     def _configure_window_geometry(self) -> None:
         """Adapt the main window to the active monitor resolution."""
-        screen_width = max(int(self.root.winfo_screenwidth()), 1)
-        screen_height = max(int(self.root.winfo_screenheight()), 1)
+        # Try to use virtual screen across all monitors if available
+        screen_bounds = self._get_virtual_screen_bounds()
+        screen_width = max(int(screen_bounds[2]), 1)
+        screen_height = max(int(screen_bounds[3]), 1)
         margin_x, margin_y = self.WINDOW_MARGIN
 
         usable_width = max(screen_width - margin_x, 720)
@@ -164,8 +177,8 @@ class AutoClickerGUI:
         width = max(width, min(min_width, usable_width))
         height = max(height, min(min_height, usable_height))
 
-        x = max((screen_width - width) // 2, 0)
-        y = max((screen_height - height) // 2, 0)
+        x = max((screen_width - width) // 2 + int(screen_bounds[0]), int(screen_bounds[0]))
+        y = max((screen_height - height) // 2 + int(screen_bounds[1]), int(screen_bounds[1]))
 
         self.root.geometry(f"{int(width)}x{int(height)}+{int(x)}+{int(y)}")
 
@@ -173,6 +186,27 @@ class AutoClickerGUI:
 
         allow_resize = width < default_width or height < default_height
         self.root.resizable(allow_resize, allow_resize)
+
+    def _get_virtual_screen_bounds(self) -> Tuple[int, int, int, int]:
+        """Return (x, y, width, height) spanning all monitors if possible."""
+        try:
+            from screeninfo import get_monitors  # type: ignore
+            mons = get_monitors()
+            if not mons:
+                raise RuntimeError()
+            min_x = min(m.x for m in mons)
+            min_y = min(m.y for m in mons)
+            max_r = max(m.x + m.width for m in mons)
+            max_b = max(m.y + m.height for m in mons)
+            return int(min_x), int(min_y), int(max_r - min_x), int(max_b - min_y)
+        except Exception:
+            # Fallback to Tk single screen
+            try:
+                w = int(self.root.winfo_screenwidth())
+                h = int(self.root.winfo_screenheight())
+                return 0, 0, w, h
+            except Exception:
+                return 0, 0, 1280, 800
 
     def _configure_styles(self) -> None:
         try:
@@ -1529,6 +1563,24 @@ class AutoClickerGUI:
             set_state(self._fld_args, t == "launch_process")
         if self._fld_title is not None:
             set_state(self._fld_title, t == "window_activate")
+        # Mouse/scroll
+        for w, condition in [
+            (getattr(self, "_fld_click_x", None), t == "mouse_click"),
+            (getattr(self, "_fld_click_y", None), t == "mouse_click"),
+            (getattr(self, "_fld_click_button", None), t == "mouse_click"),
+            (getattr(self, "_fld_click_count", None), t == "mouse_click"),
+            (getattr(self, "_fld_scroll_amount", None), t == "scroll"),
+            (getattr(self, "_fld_scroll_horizontal", None), t == "scroll"),
+        ]:
+            if w is not None:
+                set_state(w, condition)
+        # Optional mouse helpers
+        for w, condition in [
+            (getattr(self, "_btn_builder_capture", None), t == "mouse_click"),
+            (getattr(self, "_btn_builder_cursor", None), t == "mouse_click"),
+        ]:
+            if w is not None:
+                set_state(w, condition)
 
     def _builder_add_action(self) -> None:
         t = self.builder_action_type.get()
@@ -1545,6 +1597,24 @@ class AutoClickerGUI:
                 action = {"type": t, "command": self.builder_command_var.get(), "args": args}
             elif t == "window_activate":
                 action = {"type": t, "title": self.builder_title_var.get()}
+            elif t == "mouse_click":
+                x = self.builder_click_x_var.get().strip()
+                y = self.builder_click_y_var.get().strip()
+                action = {
+                    "type": t,
+                    "button": (self.builder_click_button_var.get() or "left"),
+                    "clicks": max(1, int(self.builder_click_count_var.get() or 1)),
+                }
+                if x:
+                    action["x"] = int(x)
+                if y:
+                    action["y"] = int(y)
+            elif t == "scroll":
+                action = {
+                    "type": t,
+                    "amount": int(self.builder_scroll_amount_var.get() or 0),
+                    "horizontal": bool(self.builder_scroll_horizontal_var.get()),
+                }
             else:
                 return
             self.script_actions.append(action)
@@ -1562,6 +1632,24 @@ class AutoClickerGUI:
         if 0 <= idx < len(self.script_actions):
             del self.script_actions[idx]
             self._builder_refresh_list()
+            self._builder_maybe_autosync()
+
+    def _builder_duplicate_action(self) -> None:
+        if not self.script_actions_listbox:
+            return
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.script_actions):
+            import copy
+            self.script_actions.insert(idx + 1, copy.deepcopy(self.script_actions[idx]))
+            self._builder_refresh_list()
+            if self.script_actions_listbox:
+                self.script_actions_listbox.selection_clear(0, tk.END)
+                self.script_actions_listbox.selection_set(idx + 1)
+                self.script_actions_listbox.see(idx + 1)
+            self._builder_maybe_autosync()
 
     def _builder_move_action(self, delta: int) -> None:
         if not self.script_actions_listbox:
@@ -1584,12 +1672,90 @@ class AutoClickerGUI:
             self.script_actions_listbox.selection_clear(0, tk.END)
             self.script_actions_listbox.selection_set(new_idx)
             self.script_actions_listbox.see(new_idx)
+        self._builder_maybe_autosync()
+
+    def _builder_move_action_to(self, where: str) -> None:
+        if not self.script_actions_listbox:
+            return
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if not (0 <= idx < len(self.script_actions)):
+            return
+        action = self.script_actions.pop(idx)
+        if where == "top":
+            self.script_actions.insert(0, action)
+            new_idx = 0
+        else:
+            self.script_actions.append(action)
+            new_idx = len(self.script_actions) - 1
+        self._builder_refresh_list()
+        if self.script_actions_listbox:
+            self.script_actions_listbox.selection_clear(0, tk.END)
+            self.script_actions_listbox.selection_set(new_idx)
+            self.script_actions_listbox.see(new_idx)
+        self._builder_maybe_autosync()
 
     def _builder_clear_actions(self) -> None:
         if not self.script_actions:
             return
         self.script_actions.clear()
         self._builder_refresh_list()
+        self._builder_maybe_autosync()
+
+    def _builder_replace_action(self) -> None:
+        if not self.script_actions_listbox:
+            return
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if not (0 <= idx < len(self.script_actions)):
+            return
+        # Build action from current form fields
+        t = self.builder_action_type.get()
+        try:
+            if t == "type_text":
+                action = {"type": t, "text": self.builder_text_var.get()}
+            elif t == "send_keys":
+                action = {"type": t, "sequence": self.builder_sequence_var.get()}
+            elif t == "wait":
+                action = {"type": t, "milliseconds": max(0, int(self.builder_wait_ms_var.get()))}
+            elif t == "launch_process":
+                args = [a for a in self.builder_args_var.get().split() if a]
+                action = {"type": t, "command": self.builder_command_var.get(), "args": args}
+            elif t == "window_activate":
+                action = {"type": t, "title": self.builder_title_var.get()}
+            elif t == "mouse_click":
+                x = self.builder_click_x_var.get().strip()
+                y = self.builder_click_y_var.get().strip()
+                action = {
+                    "type": t,
+                    "button": (self.builder_click_button_var.get() or "left"),
+                    "clicks": max(1, int(self.builder_click_count_var.get() or 1)),
+                }
+                if x:
+                    action["x"] = int(x)
+                if y:
+                    action["y"] = int(y)
+            elif t == "scroll":
+                action = {
+                    "type": t,
+                    "amount": int(self.builder_scroll_amount_var.get() or 0),
+                    "horizontal": bool(self.builder_scroll_horizontal_var.get()),
+                }
+            else:
+                return
+            self.script_actions[idx] = action
+            self._builder_refresh_list()
+            if self.script_actions_listbox:
+                self.script_actions_listbox.selection_clear(0, tk.END)
+                self.script_actions_listbox.selection_set(idx)
+                self.script_actions_listbox.see(idx)
+            self._builder_maybe_autosync()
+        except Exception as exc:
+            messagebox.showerror("Builder", f"Aktion konnte nicht ersetzt werden: {exc}")
 
     def _builder_insert_template(self) -> None:
         name = (self.builder_template_var.get() or "").strip()
@@ -1613,12 +1779,50 @@ class AutoClickerGUI:
                     {"type": "wait", "milliseconds": max(0, int(self.builder_wait_ms_var.get()))},
                     {"type": "window_activate", "title": self.builder_title_var.get() or ""},
                 ]
+            elif name == "Chrome: URL öffnen + Enter":
+                url = self.builder_text_var.get().strip() or "https://example.com"
+                tpl = [
+                    {"type": "launch_process", "command": "chrome.exe", "args": []},
+                    {"type": "wait", "milliseconds": 700},
+                    {"type": "type_text", "text": url},
+                    {"type": "send_keys", "sequence": "<ENTER>"},
+                ]
+            elif name == "Scroll: 3x runter":
+                tpl = [
+                    {"type": "scroll", "amount": -600, "horizontal": False},
+                    {"type": "wait", "milliseconds": 200},
+                    {"type": "scroll", "amount": -600, "horizontal": False},
+                    {"type": "wait", "milliseconds": 200},
+                    {"type": "scroll", "amount": -600, "horizontal": False},
+                ]
+            elif name == "Mausklick an Koordinaten":
+                x = self.builder_click_x_var.get().strip()
+                y = self.builder_click_y_var.get().strip()
+                action = {"type": "mouse_click", "button": "left", "clicks": 1}
+                if x:
+                    action["x"] = int(x)
+                if y:
+                    action["y"] = int(y)
+                tpl = [action]
             else:
                 tpl = []
             self.script_actions.extend(tpl)
             self._builder_refresh_list()
+            self._builder_maybe_autosync()
         except Exception as exc:
             messagebox.showerror("Vorlage", f"Vorlage konnte nicht eingefügt werden: {exc}")
+
+    def _builder_insert_key_token(self) -> None:
+        try:
+            token = (self.builder_key_token_var.get() or "").strip()
+            if not token:
+                return
+            current = self.builder_sequence_var.get() or ""
+            if current and not current.endswith(" "):
+                current += " "
+            self.builder_sequence_var.set(current + token)
+        except Exception:
+            pass
 
     def _builder_refresh_list(self) -> None:
         if not self.script_actions_listbox:
@@ -1636,7 +1840,20 @@ class AutoClickerGUI:
                 summary += f" — {a.get('command','')}"
             elif summary == "window_activate":
                 summary += f" — {a.get('title','')}"
+            elif summary == "mouse_click":
+                pos = []
+                if "x" in a and "y" in a:
+                    pos = [str(a.get("x")), str(a.get("y"))]
+                summary += " — " + ", ".join(pos or ["Cursor"]) + f" | {a.get('button','left')} x{a.get('clicks',1)}"
+            elif summary == "scroll":
+                amt = a.get("amount", 0)
+                direction = "horizontal" if a.get("horizontal", False) else "vertical"
+                summary += f" — {amt} ({direction})"
             self.script_actions_listbox.insert(tk.END, f"{i}. {summary}")
+
+    def _builder_maybe_autosync(self) -> None:
+        if bool(self.builder_autosync_var.get()):
+            self._builder_to_editor()
 
     # ------------------------------------------------------------------
     # Builder Window
@@ -1653,18 +1870,34 @@ class AutoClickerGUI:
 
         win = tk.Toplevel(self.root)
         win.title("Script‑Builder")
-        win.geometry("760x520")
+        win.geometry("1000x950")
         win.transient(self.root)
         self._builder_win = win
 
         container = ttk.Frame(win, padding=12, style="Background.TFrame")
         container.pack(fill=tk.BOTH, expand=True)
-        container.columnconfigure(0, weight=3)
-        container.columnconfigure(1, weight=2)
+        # Layout: left = vertical buttons, right = main area (fields top + list bottom)
+        container.columnconfigure(0, weight=0)
+        container.columnconfigure(1, weight=1)
+        container.rowconfigure(0, weight=1)
 
-        # Left: fields
-        fields = ttk.Frame(container, style="CardBody.TFrame")
-        fields.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        # Left: sidebar (buttons only)
+        sidebar = ttk.Frame(container, style="CardBody.TFrame")
+        sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        sidebar.columnconfigure(0, weight=1)
+        for r in range(12):
+            sidebar.rowconfigure(r, weight=0)
+
+        # Right: main area (fields + list)
+        main = ttk.Frame(container, style="CardBody.TFrame")
+        main.grid(row=0, column=1, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(0, weight=0)
+        main.rowconfigure(1, weight=1)
+
+        # Fields (top of main)
+        fields = ttk.Frame(main, style="CardBody.TFrame")
+        fields.grid(row=0, column=0, sticky="new", padx=0)
         for i in range(2):
             fields.columnconfigure(i, weight=1)
 
@@ -1673,7 +1906,15 @@ class AutoClickerGUI:
             fields,
             textvariable=self.builder_action_type,
             state="readonly",
-            values=["type_text", "send_keys", "wait", "launch_process", "window_activate"],
+            values=[
+                "type_text",
+                "send_keys",
+                "wait",
+                "launch_process",
+                "window_activate",
+                "mouse_click",
+                "scroll",
+            ],
         )
         type_cb.grid(row=0, column=1, sticky="ew")
         type_cb.bind("<<ComboboxSelected>>", lambda e: self._builder_refresh_field_states())
@@ -1685,11 +1926,28 @@ class AutoClickerGUI:
         self._fld_cmd = ttk.Entry(fields, textvariable=self.builder_command_var)
         self._fld_args = ttk.Entry(fields, textvariable=self.builder_args_var)
         self._fld_title = ttk.Entry(fields, textvariable=self.builder_title_var)
+        # Mouse click fields
+        self._fld_click_x = ttk.Entry(fields, textvariable=self.builder_click_x_var, width=10)
+        self._fld_click_y = ttk.Entry(fields, textvariable=self.builder_click_y_var, width=10)
+        self._fld_click_button = ttk.Combobox(fields, textvariable=self.builder_click_button_var, state="readonly", values=["left", "right", "middle"], width=10)
+        self._fld_click_count = ttk.Spinbox(fields, from_=1, to=10, increment=1, textvariable=self.builder_click_count_var, width=8)
+        # Scroll fields
+        self._fld_scroll_amount = ttk.Spinbox(fields, from_=-5000, to=5000, increment=50, textvariable=self.builder_scroll_amount_var, width=10)
+        self._fld_scroll_horizontal = ttk.Checkbutton(fields, text="Horizontal", variable=self.builder_scroll_horizontal_var)
 
         ttk.Label(fields, text="Text:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self._fld_text.grid(row=1, column=1, sticky="ew", pady=(6, 0))
         ttk.Label(fields, text="Keys/Sequenz:").grid(row=2, column=0, sticky="w")
-        self._fld_seq.grid(row=2, column=1, sticky="ew")
+        seq_row = ttk.Frame(fields)
+        seq_row.grid(row=2, column=1, sticky="ew")
+        seq_row.columnconfigure(0, weight=1)
+        self._fld_seq.grid(in_=seq_row, row=0, column=0, sticky="ew")
+        self.builder_key_token_var = tk.StringVar(value="<ENTER>")
+        ttk.Combobox(seq_row, textvariable=self.builder_key_token_var, state="readonly", values=[
+            "<ENTER>", "<TAB>", "<ESC>", "<SPACE>", "<BACKSPACE>", "<DELETE>",
+            "<HOME>", "<END>", "<PAGE_UP>", "<PAGE_DOWN>", "<UP>", "<DOWN>", "<LEFT>", "<RIGHT>",
+        ], width=14).grid(row=0, column=1, padx=(6, 0))
+        ttk.Button(seq_row, text="Einfügen", style="Ghost.TButton", command=self._builder_insert_key_token).grid(row=0, column=2, padx=(6, 0))
         ttk.Label(fields, text="Warte (ms):").grid(row=3, column=0, sticky="w")
         self._fld_wait.grid(row=3, column=1, sticky="w")
         ttk.Label(fields, text="Programm:").grid(row=4, column=0, sticky="w")
@@ -1699,16 +1957,49 @@ class AutoClickerGUI:
         ttk.Label(fields, text="Fenstertitel enthält:").grid(row=6, column=0, sticky="w")
         self._fld_title.grid(row=6, column=1, sticky="ew")
 
-        btns = ttk.Frame(fields, style="CardBody.TFrame")
-        btns.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        # Mouse click row
+        mouse_row = 7
+        ttk.Label(fields, text="Mausklick (x,y leer = Cursor):").grid(row=mouse_row, column=0, sticky="w", pady=(6, 0))
+        mouse_frame = ttk.Frame(fields)
+        mouse_frame.grid(row=mouse_row, column=1, sticky="ew", pady=(6, 0))
         for i in range(6):
-            btns.columnconfigure(i, weight=1)
-        ttk.Button(btns, text="Hinzufügen", style="Accent.TButton", command=self._builder_add_action).grid(row=0, column=0, sticky="ew", padx=3)
-        ttk.Button(btns, text="Entfernen", style="Ghost.TButton", command=self._builder_remove_action).grid(row=0, column=1, sticky="ew", padx=3)
-        ttk.Button(btns, text="Leeren", style="Ghost.TButton", command=self._builder_clear_actions).grid(row=0, column=2, sticky="ew", padx=3)
-        ttk.Button(btns, text="→ Editor übertragen", style="Ghost.TButton", command=self._builder_to_editor).grid(row=0, column=3, sticky="ew", padx=3)
+            mouse_frame.columnconfigure(i, weight=0)
+        ttk.Label(mouse_frame, text="X:").grid(row=0, column=0, padx=(0, 4))
+        self._fld_click_x.grid(in_=mouse_frame, row=0, column=1)
+        ttk.Label(mouse_frame, text="Y:").grid(row=0, column=2, padx=(8, 4))
+        self._fld_click_y.grid(in_=mouse_frame, row=0, column=3)
+        self._fld_click_button.grid(in_=mouse_frame, row=0, column=4, padx=(8, 4))
+        self._fld_click_count.grid(in_=mouse_frame, row=0, column=5)
+        # Mouse helpers row
+        mouse_help = ttk.Frame(fields)
+        mouse_help.grid(row=mouse_row+1, column=1, sticky="w", pady=(2, 0))
+        self._btn_builder_capture = ttk.Button(mouse_help, text="Wählen…", style="Ghost.TButton", command=self._builder_capture_click)
+        self._btn_builder_capture.grid(row=0, column=0, padx=(0, 6))
+        self._btn_builder_cursor = ttk.Button(mouse_help, text="Cursor übernehmen", style="Ghost.TButton", command=self._builder_set_xy_from_cursor)
+        self._btn_builder_cursor.grid(row=0, column=1)
+
+        # Scroll row
+        scroll_row = 9
+        ttk.Label(fields, text="Scroll:").grid(row=scroll_row, column=0, sticky="w")
+        scroll_frame = ttk.Frame(fields)
+        scroll_frame.grid(row=scroll_row, column=1, sticky="ew")
+        ttk.Label(scroll_frame, text="Amount:").grid(row=0, column=0)
+        self._fld_scroll_amount.grid(in_=scroll_frame, row=0, column=1, padx=(6, 6))
+        self._fld_scroll_horizontal.grid(in_=scroll_frame, row=0, column=2)
+
+    # Sidebar controls (no extra separator; keep fields visible)
+        ttk.Button(sidebar, text="Hinzufügen", style="Accent.TButton", command=self._builder_add_action).grid(row=0, column=0, sticky="ew", pady=(0,4))
+        ttk.Button(sidebar, text="Ersetzen", style="Ghost.TButton", command=self._builder_replace_action).grid(row=1, column=0, sticky="ew", pady=2)
+        ttk.Button(sidebar, text="Duplizieren", style="Ghost.TButton", command=self._builder_duplicate_action).grid(row=2, column=0, sticky="ew", pady=2)
+        ttk.Button(sidebar, text="Entfernen", style="Ghost.TButton", command=self._builder_remove_action).grid(row=3, column=0, sticky="ew", pady=2)
+        ttk.Button(sidebar, text="Leeren", style="Ghost.TButton", command=self._builder_clear_actions).grid(row=4, column=0, sticky="ew", pady=2)
+        ttk.Separator(sidebar, orient="horizontal").grid(row=5, column=0, sticky="ew", pady=6)
+        ttk.Button(sidebar, text="Auswahl laden", style="Ghost.TButton", command=self._builder_load_selected_to_fields).grid(row=6, column=0, sticky="ew", pady=2)
+        ttk.Button(sidebar, text="→ Editor übertragen", style="Ghost.TButton", command=self._builder_to_editor).grid(row=7, column=0, sticky="ew", pady=2)
+        ttk.Checkbutton(sidebar, text="Auto‑Sync", variable=self.builder_autosync_var).grid(row=8, column=0, sticky="w", pady=(6,2))
+        ttk.Label(sidebar, text="Vorlagen:").grid(row=9, column=0, sticky="w", pady=(8,2))
         ttk.Combobox(
-            btns,
+            sidebar,
             textvariable=self.builder_template_var,
             state="readonly",
             values=[
@@ -1716,24 +2007,43 @@ class AutoClickerGUI:
                 "Notepad: Start + Tippen + Enter",
                 "Nur Tippen + Enter",
                 "Warte + Fenster aktivieren",
+                "Chrome: URL öffnen + Enter",
+                "Scroll: 3x runter",
+                "Mausklick an Koordinaten",
             ],
-            width=28,
-        ).grid(row=0, column=4, sticky="ew", padx=3)
-        ttk.Button(btns, text="Vorlage einfügen", style="Ghost.TButton", command=self._builder_insert_template).grid(row=0, column=5, sticky="ew", padx=3)
+            width=20,
+        ).grid(row=10, column=0, sticky="ew")
+        ttk.Button(sidebar, text="Vorlage einfügen", style="Ghost.TButton", command=self._builder_insert_template).grid(row=11, column=0, sticky="ew", pady=(4,0))
 
-        # Right: actions list
-        right = ttk.Frame(container, style="CardBody.TFrame")
-        right.grid(row=0, column=1, sticky="nsew")
+        # Right: actions list (bottom area of main)
+        right = ttk.Frame(main, style="CardBody.TFrame")
+        right.grid(row=1, column=0, sticky="nsew")
         right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
         ttk.Label(right, text="Aktionen").grid(row=0, column=0, sticky="w")
         self.script_actions_listbox = tk.Listbox(right, height=16, bd=0, highlightthickness=0)
         self.script_actions_listbox.grid(row=1, column=0, sticky="nsew")
+        self.script_actions_listbox.bind("<Double-1>", lambda e: self._builder_edit_selected_action())
+        self.script_actions_listbox.bind("<Button-3>", self._builder_show_context_menu)
+
+        # Context menu
+        self._builder_context_menu = tk.Menu(win, tearoff=0)
+        self._builder_context_menu.add_command(label="Bearbeiten", command=self._builder_edit_selected_action)
+        self._builder_context_menu.add_command(label="Duplizieren", command=self._builder_duplicate_action)
+        self._builder_context_menu.add_command(label="Entfernen", command=self._builder_remove_action)
+        self._builder_context_menu.add_separator()
+        self._builder_context_menu.add_command(label="▲ Hoch", command=lambda: self._builder_move_action(-1))
+        self._builder_context_menu.add_command(label="▼ Runter", command=lambda: self._builder_move_action(1))
+        self._builder_context_menu.add_command(label="⤒ Anfang", command=lambda: self._builder_move_action_to("top"))
+        self._builder_context_menu.add_command(label="⤓ Ende", command=lambda: self._builder_move_action_to("bottom"))
 
         reorder = ttk.Frame(right, style="CardBody.TFrame")
         reorder.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        reorder.columnconfigure((0, 1), weight=1)
+        reorder.columnconfigure((0, 1, 2, 3), weight=1)
         ttk.Button(reorder, text="▲ Hoch", style="Ghost.TButton", command=lambda: self._builder_move_action(-1)).grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        ttk.Button(reorder, text="▼ Runter", style="Ghost.TButton", command=lambda: self._builder_move_action(1)).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        ttk.Button(reorder, text="▼ Runter", style="Ghost.TButton", command=lambda: self._builder_move_action(1)).grid(row=0, column=1, sticky="ew", padx=(3, 3))
+        ttk.Button(reorder, text="⤒ Anfang", style="Ghost.TButton", command=lambda: self._builder_move_action_to("top")).grid(row=0, column=2, sticky="ew", padx=(3, 3))
+        ttk.Button(reorder, text="⤓ Ende", style="Ghost.TButton", command=lambda: self._builder_move_action_to("bottom")).grid(row=0, column=3, sticky="ew", padx=(3, 0))
 
         # Setup states and list
         self._builder_refresh_field_states()
@@ -1756,6 +2066,9 @@ class AutoClickerGUI:
         self._fld_cmd = None
         self._fld_args = None
         self._fld_title = None
+        self._btn_builder_capture = None
+        self._btn_builder_cursor = None
+        self._builder_capture_in_progress = False
 
     def _builder_to_editor(self) -> None:
         try:
@@ -1793,11 +2106,158 @@ class AutoClickerGUI:
                     sanitized.append({"type": t, "command": a.get("command", ""), "args": args})
                 elif t == "window_activate":
                     sanitized.append({"type": t, "title": a.get("title", "")})
+                elif t == "mouse_click":
+                    out = {"type": t, "button": a.get("button", "left"), "clicks": int(a.get("clicks", 1) or 1)}
+                    x_val = a.get("x", None)
+                    y_val = a.get("y", None)
+                    if isinstance(x_val, (int, float, str)) and str(x_val).strip() != "":
+                        out["x"] = int(x_val)
+                    if isinstance(y_val, (int, float, str)) and str(y_val).strip() != "":
+                        out["y"] = int(y_val)
+                    sanitized.append(out)
+                elif t == "scroll":
+                    sanitized.append({"type": t, "amount": int(a.get("amount", 0) or 0), "horizontal": bool(a.get("horizontal", False))})
             self.script_actions = sanitized
             self._builder_refresh_list()
             self.script_status_var.set("Script: In Builder übertragen")
         except Exception as exc:
             messagebox.showerror("Editor", f"Konnte Aktionen nicht laden: {exc}")
+
+    def _builder_edit_selected_action(self) -> None:
+        if not self.script_actions_listbox:
+            return
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if not (0 <= idx < len(self.script_actions)):
+            return
+        a = self.script_actions[idx]
+        t = a.get("type", "")
+        dlg = tk.Toplevel(self._builder_win or self.root)
+        dlg.title("Aktion bearbeiten")
+        dlg.geometry("420x260")
+        dlg.transient(self._builder_win or self.root)
+        container = ttk.Frame(dlg, padding=12)
+        container.pack(fill=tk.BOTH, expand=True)
+        row = 0
+        ttk.Label(container, text=f"Typ: {t}", font=("Segoe UI", 10, "bold")).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        # create fields per type
+        entries: Dict[str, Any] = {}
+        def add_entry(label: str, init_val: str = ""):
+            nonlocal row
+            ttk.Label(container, text=label).grid(row=row, column=0, sticky="w", pady=(6,0))
+            var = tk.StringVar(value=init_val)
+            ent = ttk.Entry(container, textvariable=var)
+            ent.grid(row=row, column=1, sticky="ew", pady=(6,0))
+            container.columnconfigure(1, weight=1)
+            entries[label] = var
+            row += 1
+        if t == "type_text":
+            add_entry("Text", a.get("text", ""))
+        elif t == "send_keys":
+            add_entry("Sequenz", a.get("sequence", ""))
+        elif t == "wait":
+            add_entry("Millisekunden", str(a.get("milliseconds", 0)))
+        elif t == "launch_process":
+            add_entry("Programm", a.get("command", ""))
+            add_entry("Argumente", " ".join(a.get("args", []) if isinstance(a.get("args", []), list) else []))
+        elif t == "window_activate":
+            add_entry("Fenstertitel", a.get("title", ""))
+        elif t == "mouse_click":
+            add_entry("X", str(a.get("x", "")))
+            add_entry("Y", str(a.get("y", "")))
+            add_entry("Button", a.get("button", "left"))
+            add_entry("Klicks", str(a.get("clicks", 1)))
+        elif t == "scroll":
+            add_entry("Amount", str(a.get("amount", 0)))
+            add_entry("Horizontal", "1" if a.get("horizontal", False) else "0")
+
+        btns = ttk.Frame(container)
+        btns.grid(row=row, column=0, columnspan=2, sticky="e", pady=(12,0))
+        def save_and_close() -> None:
+            try:
+                if t == "type_text":
+                    a.update({"type":"type_text","text": entries["Text"].get()})
+                elif t == "send_keys":
+                    a.update({"type":"send_keys","sequence": entries["Sequenz"].get()})
+                elif t == "wait":
+                    a.update({"type":"wait","milliseconds": max(0,int(entries["Millisekunden"].get() or 0))})
+                elif t == "launch_process":
+                    args = [p for p in (entries["Argumente"].get() or "").split() if p]
+                    a.update({"type":"launch_process","command": entries["Programm"].get(), "args": args})
+                elif t == "window_activate":
+                    a.update({"type":"window_activate","title": entries["Fenstertitel"].get()})
+                elif t == "mouse_click":
+                    x = entries["X"].get().strip(); y = entries["Y"].get().strip()
+                    upd = {"type":"mouse_click","button": entries["Button"].get() or "left","clicks": max(1,int(entries["Klicks"].get() or 1))}
+                    if x: upd["x"] = int(x)
+                    if y: upd["y"] = int(y)
+                    a.clear(); a.update(upd)
+                elif t == "scroll":
+                    a.update({"type":"scroll","amount": int(entries["Amount"].get() or 0), "horizontal": entries["Horizontal"].get().strip() in ("1","true","True")})
+                self._builder_refresh_list(); self._builder_maybe_autosync(); dlg.destroy()
+            except Exception as exc:
+                messagebox.showerror("Bearbeiten", f"Konnte Aktion nicht speichern: {exc}")
+        ttk.Button(btns, text="Speichern", command=save_and_close, style="Accent.TButton").grid(row=0, column=0, padx=6)
+        ttk.Button(btns, text="Abbrechen", command=dlg.destroy, style="Ghost.TButton").grid(row=0, column=1)
+
+    def _builder_show_context_menu(self, event) -> None:
+        if not self.script_actions_listbox or not self._builder_context_menu:
+            return
+        try:
+            # Select item under cursor
+            idx = self.script_actions_listbox.nearest(event.y)
+            self.script_actions_listbox.selection_clear(0, tk.END)
+            self.script_actions_listbox.selection_set(idx)
+            self._builder_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                self._builder_context_menu.grab_release()
+            except Exception:
+                pass
+
+    def _builder_load_selected_to_fields(self) -> None:
+        if not self.script_actions_listbox:
+            return
+        sel = self.script_actions_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if not (0 <= idx < len(self.script_actions)):
+            return
+        a = self.script_actions[idx]
+        t = a.get("type")
+        try:
+            self.builder_action_type.set(str(t or "type_text"))
+            if t == "type_text":
+                self.builder_text_var.set(a.get("text", ""))
+            elif t == "send_keys":
+                self.builder_sequence_var.set(a.get("sequence", ""))
+            elif t == "wait":
+                self.builder_wait_ms_var.set(int(a.get("milliseconds", 0) or 0))
+            elif t == "launch_process":
+                self.builder_command_var.set(a.get("command", ""))
+                args = a.get("args", [])
+                if isinstance(args, list):
+                    self.builder_args_var.set(" ".join(str(x) for x in args))
+                else:
+                    self.builder_args_var.set("")
+            elif t == "window_activate":
+                self.builder_title_var.set(a.get("title", ""))
+            elif t == "mouse_click":
+                x = a.get("x")
+                y = a.get("y")
+                self.builder_click_x_var.set("" if x is None else str(int(x)))
+                self.builder_click_y_var.set("" if y is None else str(int(y)))
+                self.builder_click_button_var.set(a.get("button", "left"))
+                self.builder_click_count_var.set(int(a.get("clicks", 1) or 1))
+            elif t == "scroll":
+                self.builder_scroll_amount_var.set(int(a.get("amount", 0) or 0))
+                self.builder_scroll_horizontal_var.set(bool(a.get("horizontal", False)))
+        finally:
+            self._builder_refresh_field_states()
 
     def _validate_script_editor(self) -> None:
         # Clear previous error highlight
@@ -1955,15 +2415,83 @@ class AutoClickerGUI:
         def poll() -> None:
             try:
                 x, y = pyautogui.position()
-                screen_size = pyautogui.size()
-                self.monitor_info_var.set(
-                    f"Cursor: ({int(x)}, {int(y)}) | Bildschirmgröße: {screen_size.width}x{screen_size.height}"
-                )
+                # Compute monitor list (lazy)
+                mons = self._get_monitors()
+                idx = self._find_monitor_index(int(x), int(y), mons)
+                if idx is None:
+                    info = f"Cursor: ({int(x)}, {int(y)}) | Monitore: {len(mons)}"
+                else:
+                    m = mons[idx]
+                    info = (
+                        f"Cursor: ({int(x)}, {int(y)}) | Monitor {idx+1}: {m['width']}x{m['height']} @ ({m['x']},{m['y']}) | Monitore: {len(mons)}"
+                    )
+                self.monitor_info_var.set(info)
             except Exception:
                 self.monitor_info_var.set("Cursorinformationen nicht verfügbar.")
             self.monitor_job = self.root.after(self.MONITOR_POLL_MS, poll)
 
         poll()
+
+    def _get_monitors(self) -> List[Dict[str, int]]:
+        """List monitor rectangles as dicts with x,y,width,height."""
+        try:
+            from screeninfo import get_monitors  # type: ignore
+            mons = get_monitors() or []
+            out: List[Dict[str, int]] = []
+            for m in mons:
+                out.append({"x": int(m.x), "y": int(m.y), "width": int(m.width), "height": int(m.height)})
+            if out:
+                return out
+        except Exception:
+            pass
+        # Fallback: single screen via pyautogui
+        try:
+            s = pyautogui.size()
+            return [{"x": 0, "y": 0, "width": int(s.width), "height": int(s.height)}]
+        except Exception:
+            return [{"x": 0, "y": 0, "width": 1280, "height": 800}]
+
+    # --- Builder mouse helpers --------------------------------------
+    def _builder_capture_click(self) -> None:
+        if self._builder_capture_in_progress or self.capture_in_progress:
+            return
+        self._builder_capture_in_progress = True
+        started = self.capture_service.capture_next_click(
+            on_captured=self._on_builder_click_captured,
+            on_error=self._on_builder_capture_error,
+        )
+        if not started:
+            self._builder_capture_in_progress = False
+
+    def _on_builder_click_captured(self, x: int, y: int) -> None:
+        self._builder_capture_in_progress = False
+        try:
+            self.builder_click_x_var.set(str(int(x)))
+            self.builder_click_y_var.set(str(int(y)))
+        except Exception:
+            pass
+
+    def _on_builder_capture_error(self, exc: Exception) -> None:  # pragma: no cover - platform specific
+        self._builder_capture_in_progress = False
+        try:
+            self._log_message(f"Builder-Aufnahmefehler: {exc}", level="WARNING")
+        except Exception:
+            pass
+
+    def _builder_set_xy_from_cursor(self) -> None:
+        try:
+            x, y = pyautogui.position()
+            self.builder_click_x_var.set(str(int(x)))
+            self.builder_click_y_var.set(str(int(y)))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _find_monitor_index(x: int, y: int, monitors: List[Dict[str, int]]) -> Optional[int]:
+        for i, m in enumerate(monitors):
+            if (x >= m["x"]) and (y >= m["y"]) and (x < m["x"] + m["width"]) and (y < m["y"] + m["height"]):
+                return i
+        return None
 
     def _export_logs(self) -> None:
         from tkinter import filedialog

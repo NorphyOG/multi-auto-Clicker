@@ -7,6 +7,8 @@ Supported actions (type field in JSON):
 - send_keys: send key combinations to OS (background when possible)
 - type_text: type literal text (no cursor movement)
 - window_activate: bring a window to foreground by title (best-effort)
+ - mouse_click: click mouse at (x,y) or current position
+ - scroll: mouse wheel scroll (vertical or horizontal)
 
 Notes
 -----
@@ -54,6 +56,18 @@ class BaseAction:
             return TypeTextAction(text=str(data.get("text", "")))
         if action_type == "window_activate":
             return WindowActivateAction(title=str(data.get("title", "")))
+        if action_type == "mouse_click":
+            return MouseClickAction(
+                x=data.get("x"),
+                y=data.get("y"),
+                button=str(data.get("button", "left") or "left"),
+                clicks=int(data.get("clicks", 1) or 1),
+            )
+        if action_type == "scroll":
+            return ScrollAction(
+                amount=int(data.get("amount", 0) or 0),
+                horizontal=bool(data.get("horizontal", False)),
+            )
         raise ActionError(f"Unknown action type: {action_type}")
 
 
@@ -100,16 +114,33 @@ class SendKeysAction(BaseAction):
         if kb_cls is None or key_mod is None:
             raise ActionError("No keyboard backend available (install pynput)")
         kb = kb_cls()
+        token_map = {
+            "<ENTER>": getattr(key_mod, "enter", None),
+            "<TAB>": getattr(key_mod, "tab", None),
+            "<ESC>": getattr(key_mod, "esc", None),
+            "<BACKSPACE>": getattr(key_mod, "backspace", None),
+            "<DELETE>": getattr(key_mod, "delete", None),
+            "<HOME>": getattr(key_mod, "home", None),
+            "<END>": getattr(key_mod, "end", None),
+            "<PAGE_UP>": getattr(key_mod, "page_up", None),
+            "<PAGE_DOWN>": getattr(key_mod, "page_down", None),
+            "<UP>": getattr(key_mod, "up", None),
+            "<DOWN>": getattr(key_mod, "down", None),
+            "<LEFT>": getattr(key_mod, "left", None),
+            "<RIGHT>": getattr(key_mod, "right", None),
+            "<SPACE>": " ",
+        }
         for token in _tokenize_keys(self.sequence):
-            if token == "<ENTER>":
-                kb.press(key_mod.enter); kb.release(key_mod.enter)
-            elif token == "<TAB>":
-                kb.press(key_mod.tab); kb.release(key_mod.tab)
-            elif token == "<ESC>":
-                kb.press(key_mod.esc); kb.release(key_mod.esc)
-            else:
+            mapped = token_map.get(token)
+            if mapped is None:
+                # Type literal characters
                 for ch in token:
                     kb.press(ch); kb.release(ch)
+            else:
+                if isinstance(mapped, str) and mapped == " ":
+                    kb.press(" "); kb.release(" ")
+                else:
+                    kb.press(mapped); kb.release(mapped)
 
 
 def _tokenize_keys(sequence: str) -> List[str]:
@@ -181,6 +212,75 @@ class WindowActivateAction(BaseAction):
         ctx.log("window_activate is only fully supported on Windows")
 
 
+@dataclass
+class MouseClickAction(BaseAction):
+    x: Optional[int] = None
+    y: Optional[int] = None
+    button: str = "left"  # left|right|middle
+    clicks: int = 1
+
+    def run(self, ctx: "RunContext") -> None:
+        # Prefer pynput for mouse where available; fallback to pyautogui
+        m_ctrl_cls, m_btn_mod = _get_pynput_mouse()
+        btn_name = self.button if self.button in ("left", "right", "middle") else "left"
+        count = max(1, int(self.clicks or 1))
+        ctx.log(f"mouse_click: x={self.x}, y={self.y}, button={btn_name}, clicks={count}")
+        if m_ctrl_cls is not None and m_btn_mod is not None:
+            try:
+                controller = m_ctrl_cls()
+                btn = getattr(m_btn_mod, btn_name)
+                if self.x is not None and self.y is not None:
+                    # This will move the cursor (OS limitation for targeted clicks)
+                    controller.position = (int(self.x), int(self.y))
+                for _ in range(count):
+                    controller.click(btn)
+                return
+            except Exception as e:  # pragma: no cover
+                ctx.log(f"pynput mouse_click failed, fallback to pyautogui: {e}")
+        # Fallback: pyautogui
+        try:
+            import pyautogui  # local import to avoid hard dep at import time
+            if self.x is not None and self.y is not None:
+                for _ in range(count):
+                    pyautogui.click(x=int(self.x), y=int(self.y), button=btn_name)
+            else:
+                for _ in range(count):
+                    pyautogui.click(button=btn_name)
+        except Exception as e:  # pragma: no cover
+            raise ActionError(f"mouse_click failed: {e}")
+
+
+@dataclass
+class ScrollAction(BaseAction):
+    amount: int = 0
+    horizontal: bool = False
+
+    def run(self, ctx: "RunContext") -> None:
+        amt = int(self.amount or 0)
+        ctx.log(f"scroll: amount={amt}, horizontal={self.horizontal}")
+        # Prefer pynput where available
+        m_ctrl_cls, _m_btn_mod = _get_pynput_mouse()
+        if m_ctrl_cls is not None:
+            try:
+                controller = m_ctrl_cls()
+                if self.horizontal:
+                    controller.scroll(amt, 0)
+                else:
+                    controller.scroll(0, amt)
+                return
+            except Exception as e:  # pragma: no cover
+                ctx.log(f"pynput scroll failed, fallback to pyautogui: {e}")
+        # Fallback to pyautogui
+        try:
+            import pyautogui  # local import
+            if self.horizontal:
+                pyautogui.hscroll(amt)
+            else:
+                pyautogui.scroll(amt)
+        except Exception as e:  # pragma: no cover
+            raise ActionError(f"scroll failed: {e}")
+
+
 class RunContext:
     """Small helper object passed to actions at runtime."""
 
@@ -210,6 +310,15 @@ def _get_pynput() -> Tuple[Optional[Any], Optional[Any]]:
     try:
         from pynput.keyboard import Controller as KeyboardController, Key as KeyModule  # type: ignore
         return KeyboardController, KeyModule
+    except Exception:
+        return None, None
+
+
+def _get_pynput_mouse() -> Tuple[Optional[Any], Optional[Any]]:
+    """Import pynput.mouse lazily and return (MouseControllerClass, ButtonModule)."""
+    try:
+        from pynput.mouse import Controller as MouseController, Button as MouseButton  # type: ignore
+        return MouseController, MouseButton
     except Exception:
         return None, None
 
